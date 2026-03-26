@@ -6,12 +6,10 @@ mod sync;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Parser;
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use shardd_storage::Storage;
@@ -124,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         contiguous_heads,
         storage,
     };
-    let shared: SharedState = Arc::new(Mutex::new(node_state));
+    let shared = SharedState::new(node_state);
 
     // Bootstrap from all provided peers.
     if !cli.bootstrap.is_empty() {
@@ -143,10 +141,12 @@ async fn main() -> anyhow::Result<()> {
             {
                 Ok(resp) => {
                     if let Ok(join_resp) = resp.json::<JoinResponse>().await {
-                        let mut st = shared.lock().await;
-                        st.peers.add(bootstrap_addr);
-                        st.peers.merge(&join_resp.peers);
-                        let _ = st.persist_peers().await;
+                        {
+                            let mut st = shared.inner.write().await;
+                            st.peers.add(bootstrap_addr);
+                            st.peers.merge(&join_resp.peers);
+                        }
+                        shared.persist_peers().await;
                         info!(
                             bootstrap_node = %join_resp.node_id,
                             peers_received = join_resp.peers.len(),

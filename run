@@ -53,6 +53,17 @@ cmd_cli() {
     cargo run -p shardd-cli -- "$@"
 }
 
+# ── Benchmark ──
+
+cmd_bench() {
+    local nodes="${1:-16}"
+    shift || true
+    echo "Building release..."
+    cargo build --release -p shardd-node -p shardd-bench
+    echo "Running benchmark with ${nodes} nodes..."
+    ./target/release/shardd-bench --nodes "$nodes" --node-bin ./target/release/shardd-node "$@"
+}
+
 # ── Dashboard ──
 
 cmd_dashboard() {
@@ -125,6 +136,9 @@ Local dev (no Docker):
 CLI client:
   cli [args]         Run the shardd CLI client
 
+Benchmark:
+  bench [N] [...]    Run sync propagation benchmark (default 16 nodes)
+
 Dashboard:
   dashboard          Serve dashboard with hot-reload (dx serve)
   dashboard:build    Build dashboard for production
@@ -156,6 +170,7 @@ case "${1:-help}" in
     cluster)        cmd_cluster ;;
     cluster:stop)   cmd_cluster_stop ;;
     cli)            shift; cmd_cli "$@" ;;
+    bench)          shift || true; cmd_bench "$@" ;;
     dashboard)      cmd_dashboard ;;
     dashboard:build) cmd_dashboard_build ;;
     build)          cmd_build ;;

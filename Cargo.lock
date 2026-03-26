@@ -2828,6 +2828,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "shardd-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "reqwest",
+ "serde_json",
+ "shardd-types",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "shardd-cli"
 version = "0.1.0"
 dependencies = [

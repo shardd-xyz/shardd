@@ -12,20 +12,36 @@ pub async fn sync_loop(state: SharedState, interval_ms: u64, fanout: usize) {
     loop {
         tokio::time::sleep(interval).await;
         let peers = {
-            let st = state.lock().await;
+            let st = state.inner.read().await;
             st.peers.random_sample(fanout)
         };
         if peers.is_empty() {
             continue;
         }
         debug!(peer_count = peers.len(), "sync round starting");
+
+        // Sync with all selected peers in parallel
+        let mut handles = Vec::new();
+        for peer in peers {
+            let state = state.clone();
+            handles.push(tokio::spawn(async move {
+                match sync_with_peer(&state, &peer).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        warn!(peer, error = %e, "sync failed");
+                        0
+                    }
+                }
+            }));
+        }
+
         let mut total_applied = 0usize;
-        for peer in &peers {
-            match sync_with_peer(&state, peer).await {
-                Ok(n) => total_applied += n,
-                Err(e) => warn!(peer, error = %e, "sync failed"),
+        for handle in handles {
+            if let Ok(n) = handle.await {
+                total_applied += n;
             }
         }
+
         if total_applied > 0 {
             info!(events_applied = total_applied, "sync round complete");
         } else {
@@ -55,21 +71,25 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
         .await
     {
         if let Ok(remote_peers) = resp.json::<Vec<String>>().await {
-            let mut st = state.lock().await;
+            let mut st = state.inner.write().await;
             let added_any = remote_peers.iter().any(|p| st.peers.add(p));
+            drop(st);
             if added_any {
-                let _ = st.persist_peers().await;
+                state.persist_peers().await;
             }
         }
     }
 
-    // Compare heads and pull missing ranges.
-    let mut applied = 0usize;
+    // Snapshot local heads (single read lock)
+    let local_heads: BTreeMap<String, u64> = {
+        let st = state.inner.read().await;
+        st.contiguous_heads.clone()
+    };
+
+    // Fetch all missing ranges (no lock held during HTTP)
+    let mut all_events = Vec::new();
     for (origin, &peer_head) in &peer_heads {
-        let my_head = {
-            let st = state.lock().await;
-            st.contiguous_heads.get(origin).copied().unwrap_or(0)
-        };
+        let my_head = local_heads.get(origin).copied().unwrap_or(0);
         if peer_head <= my_head {
             continue;
         }
@@ -88,24 +108,24 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
             .send()
             .await?;
         let events: Vec<Event> = resp.json().await?;
-
-        let mut st = state.lock().await;
-        for event in events {
-            match st.insert_event(event).await {
-                Ok(true) => applied += 1,
-                Ok(false) => {} // duplicate
-                Err(e) => warn!(error = %e, "failed to insert replicated event"),
-            }
-        }
+        all_events.extend(events);
     }
 
+    // Batch insert all fetched events under a single lock
+    if all_events.is_empty() {
+        return Ok(0);
+    }
+    let applied = state.insert_events_batch(all_events).await;
     Ok(applied)
 }
 
-/// Eagerly push a single event to a few random peers.
-pub async fn eager_push(state: &SharedState, event: &Event, fanout: usize) {
+/// Eagerly push a single event to random peers.
+/// Uses the sync fanout from the peer set.
+pub async fn eager_push(state: &SharedState, event: &Event) {
     let peers = {
-        let st = state.lock().await;
+        let st = state.inner.read().await;
+        // Push to more peers for faster propagation
+        let fanout = (st.peers.len() / 2).max(3).min(10);
         st.peers.random_sample(fanout)
     };
     let client = reqwest::Client::new();
