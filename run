@@ -28,15 +28,16 @@ cmd_node() {
 }
 
 cmd_cluster() {
+    local host="${SHARDD_HOST:-127.0.0.1}"
     echo "Building release..."
     cargo build --release
-    echo "Starting 3-node cluster..."
+    echo "Starting 3-node cluster (host=${host})..."
     rm -rf ./demo
     mkdir -p ./demo/{a,b,c}
-    ./target/release/shardd-node --port 3001 --config-dir ./demo/a &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3001 --advertise-addr "${host}:3001" --config-dir ./demo/a &
     sleep 1
-    ./target/release/shardd-node --port 3002 --config-dir ./demo/b --bootstrap 127.0.0.1:3001 &
-    ./target/release/shardd-node --port 3003 --config-dir ./demo/c --bootstrap 127.0.0.1:3001 &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3002 --advertise-addr "${host}:3002" --config-dir ./demo/b --bootstrap "${host}:3001" &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3003 --advertise-addr "${host}:3003" --config-dir ./demo/c --bootstrap "${host}:3001" &
     echo "Cluster running on ports 3001-3003. Press Ctrl+C to stop."
     wait
 }
@@ -52,11 +53,22 @@ cmd_cli() {
     cargo run -p shardd-cli -- "$@"
 }
 
+# ── Dashboard ──
+
+cmd_dashboard() {
+    cd apps/dashboard && dx serve --addr 0.0.0.0 --port 8080
+}
+
+cmd_dashboard_build() {
+    cd apps/dashboard && dx build --release
+}
+
 # ── Build ──
 
 cmd_build() {
-    echo "Building Docker image..."
+    echo "Building Docker images..."
     docker build -f apps/node/Dockerfile -t shardd-node:latest .
+    docker build -f apps/dashboard/Dockerfile -t shardd-dashboard:latest .
 }
 
 # ── Code quality ──
@@ -76,9 +88,14 @@ cmd_test() {
 # ── Deploy ──
 
 cmd_deploy() {
-    DEPLOY_HOST="${DEPLOY_HOST:?Set DEPLOY_HOST}" \
-    DEPLOY_USER="${DEPLOY_USER:-ubuntu}" \
-    REMOTE_DIR="${REMOTE_DIR:-/opt/shardd}" \
+    # Load defaults from infra/.env if it exists
+    if [ -f infra/.env ]; then
+        set -a; source infra/.env; set +a
+    fi
+    DEPLOY_HOST="${DEPLOY_HOST:?Create infra/.env with DEPLOY_HOST=user@host}"
+    DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
+    REMOTE_DIR="${REMOTE_DIR:-/opt/shardd}"
+    export DEPLOY_HOST DEPLOY_USER REMOTE_DIR
     ./infra/deploy.sh
 }
 
@@ -108,6 +125,10 @@ Local dev (no Docker):
 CLI client:
   cli [args]         Run the shardd CLI client
 
+Dashboard:
+  dashboard          Serve dashboard with hot-reload (dx serve)
+  dashboard:build    Build dashboard for production
+
 Build:
   build              Build Docker image
 
@@ -135,6 +156,8 @@ case "${1:-help}" in
     cluster)        cmd_cluster ;;
     cluster:stop)   cmd_cluster_stop ;;
     cli)            shift; cmd_cli "$@" ;;
+    dashboard)      cmd_dashboard ;;
+    dashboard:build) cmd_dashboard_build ;;
     build)          cmd_build ;;
     fmt)            cmd_fmt ;;
     lint)           shift || true; cmd_lint "$@" ;;

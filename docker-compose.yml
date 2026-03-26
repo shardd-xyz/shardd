@@ -56,6 +56,16 @@ services:
     networks:
       - shardd
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    container_name: shardd-dashboard
+    ports:
+      - "8080:8080"
+    networks:
+      - shardd
+
 volumes:
   node1_data:
   node2_data:

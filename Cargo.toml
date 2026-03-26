@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/node",
     "apps/cli",
+    "apps/dashboard",
     "libs/types",
     "libs/storage",
 ]

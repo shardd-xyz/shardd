@@ -122,18 +122,25 @@ pub async fn replicate_event(
     State(state): State<SharedState>,
     Json(event): Json<Event>,
 ) -> Result<Json<ReplicateResponse>> {
-    let mut st = state.lock().await;
-    let inserted = st
-        .insert_event(event.clone())
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let inserted;
+    {
+        let mut st = state.lock().await;
+        inserted = st
+            .insert_event(event.clone())
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if inserted {
+            debug!(
+                event_id = %event.event_id,
+                origin = %event.origin_node_id,
+                seq = event.origin_seq,
+                "replicated event inserted"
+            );
+        }
+    }
+    // Cascade: forward new events to our peers
     if inserted {
-        debug!(
-            event_id = %event.event_id,
-            origin = %event.origin_node_id,
-            seq = event.origin_seq,
-            "replicated event inserted"
-        );
+        sync::eager_push(&state, &event, 3).await;
     }
     Ok(Json(ReplicateResponse {
         status: "ok".into(),

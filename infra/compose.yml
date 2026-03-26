@@ -2,79 +2,1156 @@ services:
   node1:
     image: shardd-node:latest
     container_name: shardd-node1
+    network_mode: host
     command:
       - --host=0.0.0.0
       - --port=3001
-      - --advertise-addr=node1:3001
+      - --advertise-addr=127.0.0.1:3001
       - --config-dir=/data
-      - --bootstrap=node2:3002
-      - --bootstrap=node3:3003
-    ports:
-      - "127.0.0.1:3001:3001"
+      - --bootstrap=127.0.0.1:3064
+      - --bootstrap=127.0.0.1:3002
+      - --max-peers=32
     volumes:
       - node1_data:/data
-    networks:
-      - shardd
     restart: unless-stopped
 
   node2:
     image: shardd-node:latest
     container_name: shardd-node2
+    network_mode: host
     command:
       - --host=0.0.0.0
       - --port=3002
-      - --advertise-addr=node2:3002
+      - --advertise-addr=127.0.0.1:3002
       - --config-dir=/data
-      - --bootstrap=node1:3001
-      - --bootstrap=node3:3003
-    ports:
-      - "127.0.0.1:3002:3002"
+      - --bootstrap=127.0.0.1:3001
+      - --bootstrap=127.0.0.1:3003
+      - --max-peers=32
     volumes:
       - node2_data:/data
-    networks:
-      - shardd
     restart: unless-stopped
 
   node3:
     image: shardd-node:latest
     container_name: shardd-node3
+    network_mode: host
     command:
       - --host=0.0.0.0
       - --port=3003
-      - --advertise-addr=node3:3003
+      - --advertise-addr=127.0.0.1:3003
       - --config-dir=/data
-      - --bootstrap=node1:3001
-      - --bootstrap=node2:3002
-    ports:
-      - "127.0.0.1:3003:3003"
+      - --bootstrap=127.0.0.1:3002
+      - --bootstrap=127.0.0.1:3004
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
     volumes:
       - node3_data:/data
-    networks:
-      - shardd
     restart: unless-stopped
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: shardd-caddy
+  node4:
+    image: shardd-node:latest
+    container_name: shardd-node4
     network_mode: host
-    extra_hosts:
-      - "node1:127.0.0.1"
-      - "node2:127.0.0.1"
-      - "node3:127.0.0.1"
+    command:
+      - --host=0.0.0.0
+      - --port=3004
+      - --advertise-addr=127.0.0.1:3004
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3003
+      - --bootstrap=127.0.0.1:3005
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-    depends_on:
-      - node1
-      - node2
-      - node3
+      - node4_data:/data
+    restart: unless-stopped
+
+  node5:
+    image: shardd-node:latest
+    container_name: shardd-node5
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3005
+      - --advertise-addr=127.0.0.1:3005
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3004
+      - --bootstrap=127.0.0.1:3006
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node5_data:/data
+    restart: unless-stopped
+
+  node6:
+    image: shardd-node:latest
+    container_name: shardd-node6
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3006
+      - --advertise-addr=127.0.0.1:3006
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3005
+      - --bootstrap=127.0.0.1:3007
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node6_data:/data
+    restart: unless-stopped
+
+  node7:
+    image: shardd-node:latest
+    container_name: shardd-node7
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3007
+      - --advertise-addr=127.0.0.1:3007
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3006
+      - --bootstrap=127.0.0.1:3008
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node7_data:/data
+    restart: unless-stopped
+
+  node8:
+    image: shardd-node:latest
+    container_name: shardd-node8
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3008
+      - --advertise-addr=127.0.0.1:3008
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3007
+      - --bootstrap=127.0.0.1:3009
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node8_data:/data
+    restart: unless-stopped
+
+  node9:
+    image: shardd-node:latest
+    container_name: shardd-node9
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3009
+      - --advertise-addr=127.0.0.1:3009
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3008
+      - --bootstrap=127.0.0.1:3010
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node9_data:/data
+    restart: unless-stopped
+
+  node10:
+    image: shardd-node:latest
+    container_name: shardd-node10
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3010
+      - --advertise-addr=127.0.0.1:3010
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3009
+      - --bootstrap=127.0.0.1:3011
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node10_data:/data
+    restart: unless-stopped
+
+  node11:
+    image: shardd-node:latest
+    container_name: shardd-node11
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3011
+      - --advertise-addr=127.0.0.1:3011
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3010
+      - --bootstrap=127.0.0.1:3012
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node11_data:/data
+    restart: unless-stopped
+
+  node12:
+    image: shardd-node:latest
+    container_name: shardd-node12
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3012
+      - --advertise-addr=127.0.0.1:3012
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3011
+      - --bootstrap=127.0.0.1:3013
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node12_data:/data
+    restart: unless-stopped
+
+  node13:
+    image: shardd-node:latest
+    container_name: shardd-node13
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3013
+      - --advertise-addr=127.0.0.1:3013
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3012
+      - --bootstrap=127.0.0.1:3014
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node13_data:/data
+    restart: unless-stopped
+
+  node14:
+    image: shardd-node:latest
+    container_name: shardd-node14
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3014
+      - --advertise-addr=127.0.0.1:3014
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3013
+      - --bootstrap=127.0.0.1:3015
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node14_data:/data
+    restart: unless-stopped
+
+  node15:
+    image: shardd-node:latest
+    container_name: shardd-node15
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3015
+      - --advertise-addr=127.0.0.1:3015
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3014
+      - --bootstrap=127.0.0.1:3016
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node15_data:/data
+    restart: unless-stopped
+
+  node16:
+    image: shardd-node:latest
+    container_name: shardd-node16
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3016
+      - --advertise-addr=127.0.0.1:3016
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3015
+      - --bootstrap=127.0.0.1:3017
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node16_data:/data
+    restart: unless-stopped
+
+  node17:
+    image: shardd-node:latest
+    container_name: shardd-node17
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3017
+      - --advertise-addr=127.0.0.1:3017
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3016
+      - --bootstrap=127.0.0.1:3018
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node17_data:/data
+    restart: unless-stopped
+
+  node18:
+    image: shardd-node:latest
+    container_name: shardd-node18
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3018
+      - --advertise-addr=127.0.0.1:3018
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3017
+      - --bootstrap=127.0.0.1:3019
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node18_data:/data
+    restart: unless-stopped
+
+  node19:
+    image: shardd-node:latest
+    container_name: shardd-node19
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3019
+      - --advertise-addr=127.0.0.1:3019
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3018
+      - --bootstrap=127.0.0.1:3020
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node19_data:/data
+    restart: unless-stopped
+
+  node20:
+    image: shardd-node:latest
+    container_name: shardd-node20
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3020
+      - --advertise-addr=127.0.0.1:3020
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3019
+      - --bootstrap=127.0.0.1:3021
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node20_data:/data
+    restart: unless-stopped
+
+  node21:
+    image: shardd-node:latest
+    container_name: shardd-node21
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3021
+      - --advertise-addr=127.0.0.1:3021
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3020
+      - --bootstrap=127.0.0.1:3022
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node21_data:/data
+    restart: unless-stopped
+
+  node22:
+    image: shardd-node:latest
+    container_name: shardd-node22
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3022
+      - --advertise-addr=127.0.0.1:3022
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3021
+      - --bootstrap=127.0.0.1:3023
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node22_data:/data
+    restart: unless-stopped
+
+  node23:
+    image: shardd-node:latest
+    container_name: shardd-node23
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3023
+      - --advertise-addr=127.0.0.1:3023
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3022
+      - --bootstrap=127.0.0.1:3024
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node23_data:/data
+    restart: unless-stopped
+
+  node24:
+    image: shardd-node:latest
+    container_name: shardd-node24
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3024
+      - --advertise-addr=127.0.0.1:3024
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3023
+      - --bootstrap=127.0.0.1:3025
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node24_data:/data
+    restart: unless-stopped
+
+  node25:
+    image: shardd-node:latest
+    container_name: shardd-node25
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3025
+      - --advertise-addr=127.0.0.1:3025
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3024
+      - --bootstrap=127.0.0.1:3026
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node25_data:/data
+    restart: unless-stopped
+
+  node26:
+    image: shardd-node:latest
+    container_name: shardd-node26
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3026
+      - --advertise-addr=127.0.0.1:3026
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3025
+      - --bootstrap=127.0.0.1:3027
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node26_data:/data
+    restart: unless-stopped
+
+  node27:
+    image: shardd-node:latest
+    container_name: shardd-node27
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3027
+      - --advertise-addr=127.0.0.1:3027
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3026
+      - --bootstrap=127.0.0.1:3028
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node27_data:/data
+    restart: unless-stopped
+
+  node28:
+    image: shardd-node:latest
+    container_name: shardd-node28
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3028
+      - --advertise-addr=127.0.0.1:3028
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3027
+      - --bootstrap=127.0.0.1:3029
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node28_data:/data
+    restart: unless-stopped
+
+  node29:
+    image: shardd-node:latest
+    container_name: shardd-node29
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3029
+      - --advertise-addr=127.0.0.1:3029
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3028
+      - --bootstrap=127.0.0.1:3030
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node29_data:/data
+    restart: unless-stopped
+
+  node30:
+    image: shardd-node:latest
+    container_name: shardd-node30
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3030
+      - --advertise-addr=127.0.0.1:3030
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3029
+      - --bootstrap=127.0.0.1:3031
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node30_data:/data
+    restart: unless-stopped
+
+  node31:
+    image: shardd-node:latest
+    container_name: shardd-node31
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3031
+      - --advertise-addr=127.0.0.1:3031
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3030
+      - --bootstrap=127.0.0.1:3032
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node31_data:/data
+    restart: unless-stopped
+
+  node32:
+    image: shardd-node:latest
+    container_name: shardd-node32
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3032
+      - --advertise-addr=127.0.0.1:3032
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3031
+      - --bootstrap=127.0.0.1:3033
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node32_data:/data
+    restart: unless-stopped
+
+  node33:
+    image: shardd-node:latest
+    container_name: shardd-node33
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3033
+      - --advertise-addr=127.0.0.1:3033
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3032
+      - --bootstrap=127.0.0.1:3034
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node33_data:/data
+    restart: unless-stopped
+
+  node34:
+    image: shardd-node:latest
+    container_name: shardd-node34
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3034
+      - --advertise-addr=127.0.0.1:3034
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3033
+      - --bootstrap=127.0.0.1:3035
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node34_data:/data
+    restart: unless-stopped
+
+  node35:
+    image: shardd-node:latest
+    container_name: shardd-node35
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3035
+      - --advertise-addr=127.0.0.1:3035
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3034
+      - --bootstrap=127.0.0.1:3036
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node35_data:/data
+    restart: unless-stopped
+
+  node36:
+    image: shardd-node:latest
+    container_name: shardd-node36
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3036
+      - --advertise-addr=127.0.0.1:3036
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3035
+      - --bootstrap=127.0.0.1:3037
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node36_data:/data
+    restart: unless-stopped
+
+  node37:
+    image: shardd-node:latest
+    container_name: shardd-node37
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3037
+      - --advertise-addr=127.0.0.1:3037
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3036
+      - --bootstrap=127.0.0.1:3038
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node37_data:/data
+    restart: unless-stopped
+
+  node38:
+    image: shardd-node:latest
+    container_name: shardd-node38
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3038
+      - --advertise-addr=127.0.0.1:3038
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3037
+      - --bootstrap=127.0.0.1:3039
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node38_data:/data
+    restart: unless-stopped
+
+  node39:
+    image: shardd-node:latest
+    container_name: shardd-node39
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3039
+      - --advertise-addr=127.0.0.1:3039
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3038
+      - --bootstrap=127.0.0.1:3040
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node39_data:/data
+    restart: unless-stopped
+
+  node40:
+    image: shardd-node:latest
+    container_name: shardd-node40
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3040
+      - --advertise-addr=127.0.0.1:3040
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3039
+      - --bootstrap=127.0.0.1:3041
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node40_data:/data
+    restart: unless-stopped
+
+  node41:
+    image: shardd-node:latest
+    container_name: shardd-node41
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3041
+      - --advertise-addr=127.0.0.1:3041
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3040
+      - --bootstrap=127.0.0.1:3042
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node41_data:/data
+    restart: unless-stopped
+
+  node42:
+    image: shardd-node:latest
+    container_name: shardd-node42
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3042
+      - --advertise-addr=127.0.0.1:3042
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3041
+      - --bootstrap=127.0.0.1:3043
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node42_data:/data
+    restart: unless-stopped
+
+  node43:
+    image: shardd-node:latest
+    container_name: shardd-node43
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3043
+      - --advertise-addr=127.0.0.1:3043
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3042
+      - --bootstrap=127.0.0.1:3044
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node43_data:/data
+    restart: unless-stopped
+
+  node44:
+    image: shardd-node:latest
+    container_name: shardd-node44
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3044
+      - --advertise-addr=127.0.0.1:3044
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3043
+      - --bootstrap=127.0.0.1:3045
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node44_data:/data
+    restart: unless-stopped
+
+  node45:
+    image: shardd-node:latest
+    container_name: shardd-node45
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3045
+      - --advertise-addr=127.0.0.1:3045
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3044
+      - --bootstrap=127.0.0.1:3046
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node45_data:/data
+    restart: unless-stopped
+
+  node46:
+    image: shardd-node:latest
+    container_name: shardd-node46
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3046
+      - --advertise-addr=127.0.0.1:3046
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3045
+      - --bootstrap=127.0.0.1:3047
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node46_data:/data
+    restart: unless-stopped
+
+  node47:
+    image: shardd-node:latest
+    container_name: shardd-node47
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3047
+      - --advertise-addr=127.0.0.1:3047
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3046
+      - --bootstrap=127.0.0.1:3048
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node47_data:/data
+    restart: unless-stopped
+
+  node48:
+    image: shardd-node:latest
+    container_name: shardd-node48
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3048
+      - --advertise-addr=127.0.0.1:3048
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3047
+      - --bootstrap=127.0.0.1:3049
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node48_data:/data
+    restart: unless-stopped
+
+  node49:
+    image: shardd-node:latest
+    container_name: shardd-node49
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3049
+      - --advertise-addr=127.0.0.1:3049
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3048
+      - --bootstrap=127.0.0.1:3050
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node49_data:/data
+    restart: unless-stopped
+
+  node50:
+    image: shardd-node:latest
+    container_name: shardd-node50
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3050
+      - --advertise-addr=127.0.0.1:3050
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3049
+      - --bootstrap=127.0.0.1:3051
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node50_data:/data
+    restart: unless-stopped
+
+  node51:
+    image: shardd-node:latest
+    container_name: shardd-node51
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3051
+      - --advertise-addr=127.0.0.1:3051
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3050
+      - --bootstrap=127.0.0.1:3052
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node51_data:/data
+    restart: unless-stopped
+
+  node52:
+    image: shardd-node:latest
+    container_name: shardd-node52
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3052
+      - --advertise-addr=127.0.0.1:3052
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3051
+      - --bootstrap=127.0.0.1:3053
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node52_data:/data
+    restart: unless-stopped
+
+  node53:
+    image: shardd-node:latest
+    container_name: shardd-node53
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3053
+      - --advertise-addr=127.0.0.1:3053
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3052
+      - --bootstrap=127.0.0.1:3054
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node53_data:/data
+    restart: unless-stopped
+
+  node54:
+    image: shardd-node:latest
+    container_name: shardd-node54
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3054
+      - --advertise-addr=127.0.0.1:3054
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3053
+      - --bootstrap=127.0.0.1:3055
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node54_data:/data
+    restart: unless-stopped
+
+  node55:
+    image: shardd-node:latest
+    container_name: shardd-node55
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3055
+      - --advertise-addr=127.0.0.1:3055
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3054
+      - --bootstrap=127.0.0.1:3056
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node55_data:/data
+    restart: unless-stopped
+
+  node56:
+    image: shardd-node:latest
+    container_name: shardd-node56
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3056
+      - --advertise-addr=127.0.0.1:3056
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3055
+      - --bootstrap=127.0.0.1:3057
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node56_data:/data
+    restart: unless-stopped
+
+  node57:
+    image: shardd-node:latest
+    container_name: shardd-node57
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3057
+      - --advertise-addr=127.0.0.1:3057
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3056
+      - --bootstrap=127.0.0.1:3058
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node57_data:/data
+    restart: unless-stopped
+
+  node58:
+    image: shardd-node:latest
+    container_name: shardd-node58
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3058
+      - --advertise-addr=127.0.0.1:3058
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3057
+      - --bootstrap=127.0.0.1:3059
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node58_data:/data
+    restart: unless-stopped
+
+  node59:
+    image: shardd-node:latest
+    container_name: shardd-node59
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3059
+      - --advertise-addr=127.0.0.1:3059
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3058
+      - --bootstrap=127.0.0.1:3060
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node59_data:/data
+    restart: unless-stopped
+
+  node60:
+    image: shardd-node:latest
+    container_name: shardd-node60
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3060
+      - --advertise-addr=127.0.0.1:3060
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3059
+      - --bootstrap=127.0.0.1:3061
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node60_data:/data
+    restart: unless-stopped
+
+  node61:
+    image: shardd-node:latest
+    container_name: shardd-node61
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3061
+      - --advertise-addr=127.0.0.1:3061
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3060
+      - --bootstrap=127.0.0.1:3062
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node61_data:/data
+    restart: unless-stopped
+
+  node62:
+    image: shardd-node:latest
+    container_name: shardd-node62
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3062
+      - --advertise-addr=127.0.0.1:3062
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3061
+      - --bootstrap=127.0.0.1:3063
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node62_data:/data
+    restart: unless-stopped
+
+  node63:
+    image: shardd-node:latest
+    container_name: shardd-node63
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3063
+      - --advertise-addr=127.0.0.1:3063
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3062
+      - --bootstrap=127.0.0.1:3064
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node63_data:/data
+    restart: unless-stopped
+
+  node64:
+    image: shardd-node:latest
+    container_name: shardd-node64
+    network_mode: host
+    command:
+      - --host=0.0.0.0
+      - --port=3064
+      - --advertise-addr=127.0.0.1:3064
+      - --config-dir=/data
+      - --bootstrap=127.0.0.1:3063
+      - --bootstrap=127.0.0.1:3001
+      - --max-peers=32
+    volumes:
+      - node64_data:/data
+    restart: unless-stopped
+
+  dashboard:
+    image: shardd-dashboard:latest
+    container_name: shardd-dashboard
+    network_mode: host
     restart: unless-stopped
 
 volumes:
   node1_data:
   node2_data:
   node3_data:
-  caddy_data:
-
-networks:
-  shardd:
+  node4_data:
+  node5_data:
+  node6_data:
+  node7_data:
+  node8_data:
+  node9_data:
+  node10_data:
+  node11_data:
+  node12_data:
+  node13_data:
+  node14_data:
+  node15_data:
+  node16_data:
+  node17_data:
+  node18_data:
+  node19_data:
+  node20_data:
+  node21_data:
+  node22_data:
+  node23_data:
+  node24_data:
+  node25_data:
+  node26_data:
+  node27_data:
+  node28_data:
+  node29_data:
+  node30_data:
+  node31_data:
+  node32_data:
+  node33_data:
+  node34_data:
+  node35_data:
+  node36_data:
+  node37_data:
+  node38_data:
+  node39_data:
+  node40_data:
+  node41_data:
+  node42_data:
+  node43_data:
+  node44_data:
+  node45_data:
+  node46_data:
+  node47_data:
+  node48_data:
+  node49_data:
+  node50_data:
+  node51_data:
+  node52_data:
+  node53_data:
+  node54_data:
+  node55_data:
+  node56_data:
+  node57_data:
+  node58_data:
+  node59_data:
+  node60_data:
+  node61_data:
+  node62_data:
+  node63_data:
+  node64_data:

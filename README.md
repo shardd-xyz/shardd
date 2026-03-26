@@ -10,12 +10,13 @@ and fetching missing suffix ranges over HTTP+JSON.
 
 ```
 apps/
-  node/     shardd-node — main node binary (API server + sync loop)
-  cli/      shardd-cli  — CLI client for interacting with running nodes
+  node/       shardd-node      — main node binary (API server + sync loop)
+  cli/        shardd-cli       — CLI client for interacting with running nodes
+  dashboard/  shardd-dashboard — web dashboard (Dioxus)
 libs/
-  types/    shardd-types   — shared data types
-  storage/  shardd-storage — file-based persistence layer
-infra/      production deployment (compose, caddy, deploy scripts)
+  types/      shardd-types     — shared data types
+  storage/    shardd-storage   — file-based persistence layer
+infra/        production deployment (compose, caddy, deploy scripts)
 ```
 
 ## Quick start
@@ -68,6 +69,18 @@ curl -s localhost:3002/state | jq '{event_count, balance, checksum}'
 curl -s localhost:3003/state | jq '{event_count, balance, checksum}'
 ```
 
+## Dashboard
+
+```bash
+# Install dioxus CLI (one time)
+cargo install dioxus-cli
+
+# Start cluster, then serve dashboard with hot-reload
+./run cluster
+./run dashboard
+# Opens at http://localhost:8080 — enter http://127.0.0.1:3001 as bootstrap
+```
+
 ## Docker
 
 ```bash
@@ -99,6 +112,8 @@ curl -s localhost:3003/state | jq '{event_count, balance, checksum}'
 | `cluster` | Build and run 3-node local cluster |
 | `cluster:stop` | Stop local cluster |
 | `cli [args]` | Run the CLI client |
+| `dashboard` | Serve dashboard (hot-reload) |
+| `dashboard:build` | Build dashboard for production |
 | `build` | Build Docker image |
 | `fmt` | Format all Rust code |
 | `lint` | Run clippy |

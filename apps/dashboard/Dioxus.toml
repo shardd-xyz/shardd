@@ -1,0 +1,13 @@
+[application]
+name = "shardd-dashboard"
+asset_dir = "assets"
+
+[web.app]
+title = "shardd dashboard"
+
+[web.resource.dev]
+style = ["/main.css"]
+
+[server]
+ip = "0.0.0.0"
+port = 8080

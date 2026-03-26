@@ -168,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build router.
+    let cors = tower_http::cors::CorsLayer::permissive();
     let app = Router::new()
         .route("/health", get(api::health))
         .route("/state", get(api::get_state))
@@ -180,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/heads", get(api::get_heads))
         .route("/sync", post(api::trigger_sync))
         .route("/debug/origin/{origin_node_id}", get(api::debug_origin))
+        .layer(cors)
         .with_state(shared);
 
     info!(listen = %listen_addr, advertise = %advertise_addr, config_dir = %cli.config_dir.display(), "starting shardd-node");
