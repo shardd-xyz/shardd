@@ -9,6 +9,8 @@ services:
       - --config-dir=/data
       - --bootstrap=node2:3002
       - --bootstrap=node3:3003
+    ports:
+      - "127.0.0.1:3001:3001"
     volumes:
       - node1_data:/data
     networks:
@@ -25,6 +27,8 @@ services:
       - --config-dir=/data
       - --bootstrap=node1:3001
       - --bootstrap=node3:3003
+    ports:
+      - "127.0.0.1:3002:3002"
     volumes:
       - node2_data:/data
     networks:
@@ -41,6 +45,8 @@ services:
       - --config-dir=/data
       - --bootstrap=node1:3001
       - --bootstrap=node2:3002
+    ports:
+      - "127.0.0.1:3003:3003"
     volumes:
       - node3_data:/data
     networks:
@@ -50,14 +56,14 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: shardd-caddy
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
+    extra_hosts:
+      - "node1:127.0.0.1"
+      - "node2:127.0.0.1"
+      - "node3:127.0.0.1"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
-    networks:
-      - shardd
     depends_on:
       - node1
       - node2
