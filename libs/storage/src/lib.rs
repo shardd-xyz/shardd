@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-use crate::model::{Event, NodeMeta, PeersFile};
+use shardd_types::{Event, NodeMeta, PeersFile};
 
 /// Handles all file-based persistence under a config directory.
 #[derive(Debug, Clone)]

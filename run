@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# ── Infrastructure (Docker) ──
+
+cmd_infra() {
+    docker compose up -d "$@"
+    docker compose ps
+}
+
+cmd_infra_stop() {
+    docker compose down "$@"
+}
+
+cmd_infra_logs() {
+    docker compose logs -f "$@"
+}
+
+# ── Local dev (no Docker) ──
+
+cmd_node() {
+    local port="${1:-3001}"
+    local config_dir="./demo/node-${port}"
+    shift || true
+    echo "Starting node on port ${port} (config: ${config_dir})..."
+    cargo run -p shardd-node -- --port "$port" --config-dir "$config_dir" "$@"
+}
+
+cmd_cluster() {
+    echo "Building release..."
+    cargo build --release
+    echo "Starting 3-node cluster..."
+    rm -rf ./demo
+    mkdir -p ./demo/{a,b,c}
+    ./target/release/shardd-node --port 3001 --config-dir ./demo/a &
+    sleep 1
+    ./target/release/shardd-node --port 3002 --config-dir ./demo/b --bootstrap 127.0.0.1:3001 &
+    ./target/release/shardd-node --port 3003 --config-dir ./demo/c --bootstrap 127.0.0.1:3001 &
+    echo "Cluster running on ports 3001-3003. Press Ctrl+C to stop."
+    wait
+}
+
+cmd_cluster_stop() {
+    echo "Stopping local cluster..."
+    pkill -f "shardd-node" || true
+}
+
+# ── CLI client ──
+
+cmd_cli() {
+    cargo run -p shardd-cli -- "$@"
+}
+
+# ── Build ──
+
+cmd_build() {
+    echo "Building Docker image..."
+    docker build -f apps/node/Dockerfile -t shardd-node:latest .
+}
+
+# ── Code quality ──
+
+cmd_fmt() {
+    cargo fmt --all
+}
+
+cmd_lint() {
+    cargo clippy --workspace --all-targets "$@"
+}
+
+cmd_test() {
+    cargo test --workspace "$@"
+}
+
+# ── Deploy ──
+
+cmd_deploy() {
+    DEPLOY_HOST="${DEPLOY_HOST:?Set DEPLOY_HOST}" \
+    DEPLOY_USER="${DEPLOY_USER:-ubuntu}" \
+    REMOTE_DIR="${REMOTE_DIR:-/opt/shardd}" \
+    ./infra/deploy.sh
+}
+
+# ── Housekeeping ──
+
+cmd_clean() {
+    echo "Removing demo data..."
+    rm -rf ./demo
+}
+
+# ── Help ──
+
+cmd_help() {
+    cat <<'EOF'
+Usage: ./run <command>
+
+Infrastructure (Docker):
+  infra              Start 3-node cluster via docker compose
+  infra:stop         Stop containers
+  infra:logs         Tail container logs
+
+Local dev (no Docker):
+  node [port] [...]  Run a single node (default port 3001)
+  cluster            Build and run a 3-node local cluster
+  cluster:stop       Stop local cluster processes
+
+CLI client:
+  cli [args]         Run the shardd CLI client
+
+Build:
+  build              Build Docker image
+
+Code quality:
+  fmt                Format all Rust code
+  lint               Run clippy on all crates
+  test               Run all tests
+
+Deploy:
+  deploy             Build image and deploy to production
+
+Other:
+  clean              Remove demo data directories
+  help               Show this help
+EOF
+}
+
+# ── Router ──
+
+case "${1:-help}" in
+    infra)          shift || true; cmd_infra "$@" ;;
+    infra:stop)     shift || true; cmd_infra_stop "$@" ;;
+    infra:logs)     shift || true; cmd_infra_logs "$@" ;;
+    node)           shift || true; cmd_node "$@" ;;
+    cluster)        cmd_cluster ;;
+    cluster:stop)   cmd_cluster_stop ;;
+    cli)            shift; cmd_cli "$@" ;;
+    build)          cmd_build ;;
+    fmt)            cmd_fmt ;;
+    lint)           shift || true; cmd_lint "$@" ;;
+    test)           shift || true; cmd_test "$@" ;;
+    deploy)         cmd_deploy ;;
+    clean)          cmd_clean ;;
+    help|--help|-h) cmd_help ;;
+    *)              echo "Unknown command: $1"; echo; cmd_help; exit 1 ;;
+esac

@@ -1,0 +1,65 @@
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: apps/node/Dockerfile
+    container_name: shardd-node1
+    ports:
+      - "3001:3001"
+    command:
+      - --host=0.0.0.0
+      - --port=3001
+      - --advertise-addr=node1:3001
+      - --config-dir=/data
+      - --bootstrap=node2:3002
+      - --bootstrap=node3:3003
+    volumes:
+      - node1_data:/data
+    networks:
+      - shardd
+
+  node2:
+    build:
+      context: .
+      dockerfile: apps/node/Dockerfile
+    container_name: shardd-node2
+    ports:
+      - "3002:3002"
+    command:
+      - --host=0.0.0.0
+      - --port=3002
+      - --advertise-addr=node2:3002
+      - --config-dir=/data
+      - --bootstrap=node1:3001
+      - --bootstrap=node3:3003
+    volumes:
+      - node2_data:/data
+    networks:
+      - shardd
+
+  node3:
+    build:
+      context: .
+      dockerfile: apps/node/Dockerfile
+    container_name: shardd-node3
+    ports:
+      - "3003:3003"
+    command:
+      - --host=0.0.0.0
+      - --port=3003
+      - --advertise-addr=node3:3003
+      - --config-dir=/data
+      - --bootstrap=node1:3001
+      - --bootstrap=node2:3002
+    volumes:
+      - node3_data:/data
+    networks:
+      - shardd
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
+
+networks:
+  shardd:

@@ -1340,7 +1340,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "shardd"
+name = "shardd-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "reqwest",
+ "serde_json",
+ "shardd-types",
+ "tokio",
+]
+
+[[package]]
+name = "shardd-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1351,11 +1363,31 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shardd-storage",
+ "shardd-types",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "shardd-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "shardd-types",
+ "tokio",
+]
+
+[[package]]
+name = "shardd-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

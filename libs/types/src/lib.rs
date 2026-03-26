@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+// ── Domain types ──
+
 /// A single event in the append-only log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -29,25 +31,25 @@ pub struct PeersFile {
 
 // ── API request / response types ──
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateEventRequest {
     pub amount: i64,
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateEventResponse {
     pub event: Event,
     pub event_count: usize,
     pub balance: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AddPeerRequest {
     pub addr: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct JoinRequest {
     pub node_id: String,
     pub addr: String,
@@ -61,14 +63,14 @@ pub struct JoinResponse {
     pub heads: BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RangeRequest {
     pub origin_node_id: String,
     pub from_seq: u64,
     pub to_seq: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub node_id: String,
     pub addr: String,
@@ -77,7 +79,7 @@ pub struct HealthResponse {
     pub balance: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StateResponse {
     pub node_id: String,
     pub addr: String,
@@ -89,13 +91,13 @@ pub struct StateResponse {
     pub checksum: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplicateResponse {
     pub status: String,
     pub inserted: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DebugOriginResponse {
     pub origin_node_id: String,
     pub contiguous_head: u64,
@@ -105,7 +107,7 @@ pub struct DebugOriginResponse {
     pub count: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SyncTriggerResponse {
     pub status: String,
     pub peers_contacted: usize,

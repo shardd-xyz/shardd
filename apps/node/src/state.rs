@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::model::{Event, NodeMeta};
+use shardd_storage::Storage;
+use shardd_types::{Event, NodeMeta, PeersFile};
+
 use crate::peer::PeerSet;
-use crate::storage::Storage;
 
 pub type SharedState = Arc<Mutex<NodeState>>;
 
@@ -148,7 +149,7 @@ impl NodeState {
 
     /// Save current peer set to disk.
     pub async fn persist_peers(&self) -> anyhow::Result<()> {
-        let pf = crate::model::PeersFile {
+        let pf = PeersFile {
             peers: self.peers.to_vec(),
         };
         self.storage.save_peers(&pf).await?;

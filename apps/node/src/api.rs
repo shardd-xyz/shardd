@@ -2,8 +2,9 @@ use axum::extract::{Path, State};
 use axum::Json;
 use tracing::{debug, info};
 
+use shardd_types::*;
+
 use crate::error::AppError;
-use crate::model::*;
 use crate::state::SharedState;
 use crate::sync;
 
@@ -95,7 +96,7 @@ pub async fn create_event(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         event_count = st.event_count();
         balance = st.balance();
-        fanout = 3; // default eager push fanout
+        fanout = 3;
         event = e;
         info!(
             event_id = %event.event_id,

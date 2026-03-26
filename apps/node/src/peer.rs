@@ -54,8 +54,4 @@ impl PeerSet {
     pub fn len(&self) -> usize {
         self.addrs.len()
     }
-
-    pub fn contains(&self, addr: &str) -> bool {
-        self.addrs.contains(addr)
-    }
 }

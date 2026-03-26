@@ -1,0 +1,74 @@
+services:
+  node1:
+    image: shardd-node:latest
+    container_name: shardd-node1
+    command:
+      - --host=0.0.0.0
+      - --port=3001
+      - --advertise-addr=node1:3001
+      - --config-dir=/data
+      - --bootstrap=node2:3002
+      - --bootstrap=node3:3003
+    volumes:
+      - node1_data:/data
+    networks:
+      - shardd
+    restart: unless-stopped
+
+  node2:
+    image: shardd-node:latest
+    container_name: shardd-node2
+    command:
+      - --host=0.0.0.0
+      - --port=3002
+      - --advertise-addr=node2:3002
+      - --config-dir=/data
+      - --bootstrap=node1:3001
+      - --bootstrap=node3:3003
+    volumes:
+      - node2_data:/data
+    networks:
+      - shardd
+    restart: unless-stopped
+
+  node3:
+    image: shardd-node:latest
+    container_name: shardd-node3
+    command:
+      - --host=0.0.0.0
+      - --port=3003
+      - --advertise-addr=node3:3003
+      - --config-dir=/data
+      - --bootstrap=node1:3001
+      - --bootstrap=node2:3002
+    volumes:
+      - node3_data:/data
+    networks:
+      - shardd
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: shardd-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks:
+      - shardd
+    depends_on:
+      - node1
+      - node2
+      - node3
+    restart: unless-stopped
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
+  caddy_data:
+
+networks:
+  shardd:

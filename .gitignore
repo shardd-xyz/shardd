@@ -1,1 +1,6 @@
 /target
+demo/
+infra/secrets/*
+!infra/secrets/.gitkeep
+infra/.env
+.env

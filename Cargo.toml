@@ -1,19 +1,46 @@
-[package]
-name = "shardd"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "apps/node",
+    "apps/cli",
+    "libs/types",
+    "libs/storage",
+]
 
-[dependencies]
-anyhow = "1"
-axum = "0.7"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json"] }
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+shardd-types = { path = "libs/types" }
+shardd-storage = { path = "libs/storage" }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-thiserror = "2"
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Crypto
+sha2 = "0.10"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Other
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"

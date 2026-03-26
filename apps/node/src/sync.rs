@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use crate::model::Event;
+use shardd_types::Event;
+
 use crate::state::SharedState;
 
 /// Background sync loop: periodically pull missing events from random peers.

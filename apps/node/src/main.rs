@@ -1,9 +1,7 @@
 mod api;
 mod error;
-mod model;
 mod peer;
 mod state;
-mod storage;
 mod sync;
 
 use std::collections::BTreeMap;
@@ -16,13 +14,14 @@ use clap::Parser;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::model::NodeMeta;
+use shardd_storage::Storage;
+use shardd_types::{JoinResponse, NodeMeta};
+
 use crate::peer::PeerSet;
 use crate::state::{NodeState, SharedState};
-use crate::storage::Storage;
 
 #[derive(Parser)]
-#[command(name = "shardd", about = "Multi-writer replicated append-only event system")]
+#[command(name = "shardd-node", about = "Multi-writer replicated append-only event system")]
 struct Cli {
     /// Listen host
     #[arg(long, default_value = "127.0.0.1")]
@@ -31,6 +30,10 @@ struct Cli {
     /// Listen port
     #[arg(long)]
     port: u16,
+
+    /// Advertised address (host:port) for peer exchange. Defaults to host:port.
+    #[arg(long)]
+    advertise_addr: Option<String>,
 
     /// Config / data directory
     #[arg(long)]
@@ -63,7 +66,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let addr = format!("{}:{}", cli.host, cli.port);
+    let listen_addr = format!("{}:{}", cli.host, cli.port);
+    let advertise_addr = cli
+        .advertise_addr
+        .clone()
+        .unwrap_or_else(|| listen_addr.clone());
 
     // Initialize storage.
     let storage = Storage::new(&cli.config_dir);
@@ -91,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load peers.
     let peers_file = storage.load_peers().await?;
-    let mut peers = PeerSet::new(cli.max_peers, addr.clone());
+    let mut peers = PeerSet::new(cli.max_peers, advertise_addr.clone());
     peers.merge(&peers_file.peers);
 
     // Load events and compute heads.
@@ -110,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
 
     let node_state = NodeState {
         node_id: node_id.clone(),
-        addr: addr.clone(),
+        addr: advertise_addr.clone(),
         next_seq,
         peers,
         events_by_origin,
@@ -128,14 +135,14 @@ async fn main() -> anyhow::Result<()> {
                 .post(format!("http://{bootstrap_addr}/join"))
                 .json(&serde_json::json!({
                     "node_id": node_id,
-                    "addr": addr,
+                    "addr": advertise_addr,
                 }))
                 .timeout(std::time::Duration::from_secs(5))
                 .send()
                 .await
             {
                 Ok(resp) => {
-                    if let Ok(join_resp) = resp.json::<model::JoinResponse>().await {
+                    if let Ok(join_resp) = resp.json::<JoinResponse>().await {
                         let mut st = shared.lock().await;
                         st.peers.add(bootstrap_addr);
                         st.peers.merge(&join_resp.peers);
@@ -175,8 +182,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/debug/origin/{origin_node_id}", get(api::debug_origin))
         .with_state(shared);
 
-    info!(addr = %addr, config_dir = %cli.config_dir.display(), "starting shardd");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    info!(listen = %listen_addr, advertise = %advertise_addr, config_dir = %cli.config_dir.display(), "starting shardd-node");
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
