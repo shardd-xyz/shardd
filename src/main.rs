@@ -36,9 +36,9 @@ struct Cli {
     #[arg(long)]
     config_dir: PathBuf,
 
-    /// Bootstrap peer address (host:port)
+    /// Bootstrap peer addresses (host:port), may be repeated
     #[arg(long)]
-    bootstrap: Option<String>,
+    bootstrap: Vec<String>,
 
     /// Number of peers to contact per sync round
     #[arg(long, default_value = "3")]
@@ -119,34 +119,36 @@ async fn main() -> anyhow::Result<()> {
     };
     let shared: SharedState = Arc::new(Mutex::new(node_state));
 
-    // Bootstrap.
-    if let Some(ref bootstrap_addr) = cli.bootstrap {
-        info!(bootstrap = %bootstrap_addr, "joining bootstrap peer");
+    // Bootstrap from all provided peers.
+    if !cli.bootstrap.is_empty() {
         let client = reqwest::Client::new();
-        match client
-            .post(format!("http://{bootstrap_addr}/join"))
-            .json(&serde_json::json!({
-                "node_id": node_id,
-                "addr": addr,
-            }))
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                if let Ok(join_resp) = resp.json::<model::JoinResponse>().await {
-                    let mut st = shared.lock().await;
-                    st.peers.add(bootstrap_addr);
-                    st.peers.merge(&join_resp.peers);
-                    let _ = st.persist_peers().await;
-                    info!(
-                        bootstrap_node = %join_resp.node_id,
-                        peers_received = join_resp.peers.len(),
-                        "bootstrap join successful"
-                    );
+        for bootstrap_addr in &cli.bootstrap {
+            info!(bootstrap = %bootstrap_addr, "joining bootstrap peer");
+            match client
+                .post(format!("http://{bootstrap_addr}/join"))
+                .json(&serde_json::json!({
+                    "node_id": node_id,
+                    "addr": addr,
+                }))
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if let Ok(join_resp) = resp.json::<model::JoinResponse>().await {
+                        let mut st = shared.lock().await;
+                        st.peers.add(bootstrap_addr);
+                        st.peers.merge(&join_resp.peers);
+                        let _ = st.persist_peers().await;
+                        info!(
+                            bootstrap_node = %join_resp.node_id,
+                            peers_received = join_resp.peers.len(),
+                            "bootstrap join successful"
+                        );
+                    }
                 }
+                Err(e) => warn!(bootstrap = %bootstrap_addr, error = %e, "bootstrap join failed"),
             }
-            Err(e) => warn!(error = %e, "bootstrap join failed"),
         }
     }
 
