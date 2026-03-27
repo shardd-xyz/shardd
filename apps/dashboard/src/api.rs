@@ -1,4 +1,5 @@
 use shardd_types::*;
+use std::collections::HashSet;
 
 pub async fn fetch_events(base: &str) -> Result<Vec<Event>, reqwest::Error> {
     reqwest::Client::new()
@@ -32,10 +33,9 @@ pub async fn trigger_sync(base: &str) -> Result<SyncTriggerResponse, reqwest::Er
         .await
 }
 
-/// Discover all nodes by fetching /peers from the bootstrap node.
-/// Maps internal peer addresses to public URLs using the bootstrap hostname.
+/// Discover all nodes by crawling /peers from the bootstrap node and then
+/// from discovered nodes until no new nodes are found.
 pub async fn discover_nodes(bootstrap_url: &str) -> Result<Vec<String>, reqwest::Error> {
-    // Parse hostname from bootstrap URL (e.g. "http://16.162.34.54:3001" -> "16.162.34.54")
     let hostname = bootstrap_url
         .trim_start_matches("http://")
         .trim_start_matches("https://")
@@ -44,56 +44,80 @@ pub async fn discover_nodes(bootstrap_url: &str) -> Result<Vec<String>, reqwest:
         .unwrap_or("127.0.0.1")
         .to_string();
 
-    // Get the state to find what port this node is on
-    let state: StateResponse = reqwest::Client::new()
-        .get(format!("{bootstrap_url}/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let client = reqwest::Client::new();
+    let mut known_urls: HashSet<String> = HashSet::new();
+    known_urls.insert(bootstrap_url.to_string());
 
-    // Get peers (these are internal addresses like "node2:3002")
-    let peers: Vec<String> = reqwest::Client::new()
-        .get(format!("{bootstrap_url}/peers"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    // Crawl: fetch peers from known nodes, add new ones, repeat
+    let mut to_crawl = vec![bootstrap_url.to_string()];
+    for _ in 0..5 {
+        // max 5 rounds of crawling
+        let mut next_crawl = Vec::new();
+        for url in &to_crawl {
+            // Get this node's peers
+            let peers = match client.get(format!("{url}/peers")).send().await {
+                Ok(resp) => resp.json::<Vec<String>>().await.unwrap_or_default(),
+                Err(_) => continue,
+            };
+            // Also get this node's own address from /state
+            let self_addr = match client.get(format!("{url}/state")).send().await {
+                Ok(resp) => resp
+                    .json::<StateResponse>()
+                    .await
+                    .ok()
+                    .map(|s| s.addr),
+                Err(_) => None,
+            };
 
-    let mut urls = vec![bootstrap_url.to_string()];
+            // Collect all addresses
+            let mut addrs: Vec<String> = peers;
+            if let Some(addr) = self_addr {
+                addrs.push(addr);
+            }
 
-    for peer in &peers {
-        // Extract port from peer address (e.g. "node2:3002" -> "3002")
-        let port = peer.split(':').last().unwrap_or("3001");
-        let url = format!("http://{hostname}:{port}");
-        if !urls.contains(&url) {
-            urls.push(url);
+            for addr in addrs {
+                let port = addr.split(':').last().unwrap_or("3001");
+                let url = format!("http://{hostname}:{port}");
+                if known_urls.insert(url.clone()) {
+                    next_crawl.push(url);
+                }
+            }
         }
+        if next_crawl.is_empty() {
+            break;
+        }
+        to_crawl = next_crawl;
     }
 
-    // Also include bootstrap node's own port in case it's not in the peer list
-    let self_port = state.addr.split(':').last().unwrap_or("3001");
-    let self_url = format!("http://{hostname}:{self_port}");
-    if !urls.contains(&self_url) {
-        urls.push(self_url);
-    }
-
+    let mut urls: Vec<String> = known_urls.into_iter().collect();
     urls.sort();
-    urls.dedup();
     Ok(urls)
 }
 
-/// Fetch state from all known node URLs. Returns map of node_id -> (url, state).
+/// Fetch state from all known node URLs concurrently.
 pub async fn fetch_all_states(urls: &[String]) -> Vec<(String, StateResponse)> {
-    let mut results = Vec::new();
     let client = reqwest::Client::new();
-    for url in urls {
-        if let Ok(resp) = client.get(format!("{url}/state")).send().await {
-            if let Ok(state) = resp.json::<StateResponse>().await {
-                results.push((url.clone(), state));
+    let futs: Vec<_> = urls
+        .iter()
+        .map(|url| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let result = client
+                    .get(format!("{url}/state"))
+                    .send()
+                    .await
+                    .ok()?
+                    .json::<StateResponse>()
+                    .await
+                    .ok()?;
+                Some((url, result))
             }
-        }
-    }
-    results.sort_by(|a, b| a.1.addr.cmp(&b.1.addr));
-    results
+        })
+        .collect();
+    let results = futures::future::join_all(futs).await;
+    let mut out: Vec<(String, StateResponse)> =
+        results.into_iter().flatten().collect();
+    out.sort_by(|a, b| a.1.addr.cmp(&b.1.addr));
+    out
 }

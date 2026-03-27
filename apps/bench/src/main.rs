@@ -37,6 +37,10 @@ struct Cli {
     /// Extra warmup seconds after health checks pass
     #[arg(long, default_value = "2")]
     warmup: u64,
+
+    /// Max peers per node (default: node count)
+    #[arg(long)]
+    max_peers: Option<usize>,
 }
 
 struct Cluster {
@@ -60,7 +64,7 @@ impl Cluster {
                 .arg(format!("127.0.0.1:{port}"));
             cmd.arg("--config-dir").arg(dir.path());
             cmd.arg("--max-peers")
-                .arg(cli.nodes.to_string());
+                .arg(cli.max_peers.unwrap_or(cli.nodes).to_string());
             cmd.arg("--sync-interval-ms").arg("1000");
 
             // Bootstrap: nodes 2..N bootstrap from node 1

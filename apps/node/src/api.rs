@@ -13,37 +13,37 @@ type Result<T> = std::result::Result<T, AppError>;
 // ── GET /health ──
 
 pub async fn health(State(state): State<SharedState>) -> Result<Json<HealthResponse>> {
-    let st = state.inner.read().await;
+    let peer_count = state.peers.lock().await.len();
     Ok(Json(HealthResponse {
-        node_id: st.node_id.clone(),
-        addr: st.addr.clone(),
-        peer_count: st.peers.len(),
-        event_count: st.event_count(),
-        balance: st.balance(),
+        node_id: state.node_id.to_string(),
+        addr: state.addr.to_string(),
+        peer_count,
+        event_count: state.event_count(),
+        balance: state.balance(),
     }))
 }
 
 // ── GET /state ──
 
 pub async fn get_state(State(state): State<SharedState>) -> Result<Json<StateResponse>> {
-    let st = state.inner.read().await;
+    let peers = state.peers.lock().await.to_vec();
     Ok(Json(StateResponse {
-        node_id: st.node_id.clone(),
-        addr: st.addr.clone(),
-        next_seq: st.next_seq,
-        peers: st.peers.to_vec(),
-        event_count: st.event_count(),
-        balance: st.balance(),
-        contiguous_heads: st.contiguous_heads.clone(),
-        checksum: st.checksum(),
+        node_id: state.node_id.to_string(),
+        addr: state.addr.to_string(),
+        next_seq: state.next_seq.load(std::sync::atomic::Ordering::Relaxed),
+        peers,
+        event_count: state.event_count(),
+        balance: state.balance(),
+        contiguous_heads: state.get_heads(),
+        checksum: state.checksum(),
     }))
 }
 
 // ── GET /peers ──
 
 pub async fn get_peers(State(state): State<SharedState>) -> Result<Json<Vec<String>>> {
-    let st = state.inner.read().await;
-    Ok(Json(st.peers.to_vec()))
+    let peers = state.peers.lock().await;
+    Ok(Json(peers.to_vec()))
 }
 
 // ── POST /peers/add ──
@@ -52,10 +52,7 @@ pub async fn add_peer(
     State(state): State<SharedState>,
     Json(req): Json<AddPeerRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let added = {
-        let mut st = state.inner.write().await;
-        st.peers.add(&req.addr)
-    };
+    let added = state.peers.lock().await.add(&req.addr);
     if added {
         info!(addr = %req.addr, "peer added");
         state.persist_peers().await;
@@ -69,22 +66,21 @@ pub async fn join(
     State(state): State<SharedState>,
     Json(req): Json<JoinRequest>,
 ) -> Result<Json<JoinResponse>> {
-    let (added, resp) = {
-        let mut st = state.inner.write().await;
-        let added = st.peers.add(&req.addr);
-        let resp = JoinResponse {
-            node_id: st.node_id.clone(),
-            addr: st.addr.clone(),
-            peers: st.peers.to_vec(),
-            heads: st.contiguous_heads.clone(),
-        };
-        (added, resp)
+    let (added, peers) = {
+        let mut p = state.peers.lock().await;
+        let added = p.add(&req.addr);
+        (added, p.to_vec())
     };
     if added {
         info!(node_id = %req.node_id, addr = %req.addr, "peer joined");
         state.persist_peers().await;
     }
-    Ok(Json(resp))
+    Ok(Json(JoinResponse {
+        node_id: state.node_id.to_string(),
+        addr: state.addr.to_string(),
+        peers,
+        heads: state.get_heads(),
+    }))
 }
 
 // ── POST /events ──
@@ -93,15 +89,7 @@ pub async fn create_event(
     State(state): State<SharedState>,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<CreateEventResponse>> {
-    let event = state
-        .create_local_event(req.amount, req.note)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let (event_count, balance) = {
-        let st = state.inner.read().await;
-        (st.event_count(), st.balance())
-    };
+    let event = state.create_local_event(req.amount, req.note);
 
     info!(
         event_id = %event.event_id,
@@ -110,13 +98,13 @@ pub async fn create_event(
         "local event created"
     );
 
-    // Eager push outside any lock
+    // Eager push — no locks held
     sync::eager_push(&state, &event).await;
 
     Ok(Json(CreateEventResponse {
         event,
-        event_count,
-        balance,
+        event_count: state.event_count(),
+        balance: state.balance(),
     }))
 }
 
@@ -126,10 +114,7 @@ pub async fn replicate_event(
     State(state): State<SharedState>,
     Json(event): Json<Event>,
 ) -> Result<Json<ReplicateResponse>> {
-    let inserted = state
-        .insert_event(event.clone())
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let inserted = state.insert_event(event.clone());
     if inserted {
         debug!(
             event_id = %event.event_id,
@@ -137,7 +122,6 @@ pub async fn replicate_event(
             seq = event.origin_seq,
             "replicated event inserted"
         );
-        // Cascade forward
         sync::eager_push(&state, &event).await;
     }
     Ok(Json(ReplicateResponse {
@@ -149,8 +133,7 @@ pub async fn replicate_event(
 // ── GET /events ──
 
 pub async fn list_events(State(state): State<SharedState>) -> Result<Json<Vec<Event>>> {
-    let st = state.inner.read().await;
-    Ok(Json(st.all_events_sorted()))
+    Ok(Json(state.all_events_sorted()))
 }
 
 // ── GET /heads ──
@@ -158,8 +141,7 @@ pub async fn list_events(State(state): State<SharedState>) -> Result<Json<Vec<Ev
 pub async fn get_heads(
     State(state): State<SharedState>,
 ) -> Result<Json<std::collections::BTreeMap<String, u64>>> {
-    let st = state.inner.read().await;
-    Ok(Json(st.contiguous_heads.clone()))
+    Ok(Json(state.get_heads()))
 }
 
 // ── POST /events/range ──
@@ -168,9 +150,8 @@ pub async fn events_range(
     State(state): State<SharedState>,
     Json(req): Json<RangeRequest>,
 ) -> Result<Json<Vec<Event>>> {
-    let st = state.inner.read().await;
     Ok(Json(
-        st.get_events_range(&req.origin_node_id, req.from_seq, req.to_seq),
+        state.get_events_range(&req.origin_node_id, req.from_seq, req.to_seq),
     ))
 }
 
@@ -179,10 +160,7 @@ pub async fn events_range(
 pub async fn trigger_sync(
     State(state): State<SharedState>,
 ) -> Result<Json<SyncTriggerResponse>> {
-    let peers = {
-        let st = state.inner.read().await;
-        st.peers.to_vec()
-    };
+    let peers = state.peers.lock().await.to_vec();
     let client = reqwest::Client::new();
     let mut contacted = 0usize;
     let mut applied = 0usize;
@@ -203,11 +181,11 @@ pub async fn trigger_sync(
         };
         contacted += 1;
 
+        let local_heads = state.get_heads();
+        let mut all_events = Vec::new();
+
         for (origin, peer_head) in &peer_heads {
-            let my_head = {
-                let st = state.inner.read().await;
-                st.contiguous_heads.get(origin).copied().unwrap_or(0)
-            };
+            let my_head = local_heads.get(origin).copied().unwrap_or(0);
             if *peer_head <= my_head {
                 continue;
             }
@@ -225,8 +203,9 @@ pub async fn trigger_sync(
             let Ok(events) = resp.json::<Vec<Event>>().await else {
                 continue;
             };
-            applied += state.insert_events_batch(events).await;
+            all_events.extend(events);
         }
+        applied += state.insert_events_batch(all_events);
     }
 
     info!(peers_contacted = contacted, events_applied = applied, "manual sync complete");
@@ -243,21 +222,14 @@ pub async fn debug_origin(
     State(state): State<SharedState>,
     Path(origin_node_id): Path<String>,
 ) -> Result<Json<DebugOriginResponse>> {
-    let st = state.inner.read().await;
-    let head = st
-        .contiguous_heads
-        .get(&origin_node_id)
-        .copied()
-        .unwrap_or(0);
-    let (present_seqs, min_seq, max_seq, count) =
-        if let Some(seqs) = st.events_by_origin.get(&origin_node_id) {
-            let keys: Vec<u64> = seqs.keys().copied().collect();
+    let (head, present_seqs, min_seq, max_seq, count) =
+        if let Some(entry) = state.origins.get(&origin_node_id) {
+            let keys: Vec<u64> = entry.events.keys().copied().collect();
             let min = keys.first().copied();
             let max = keys.last().copied();
-            let count = keys.len();
-            (keys, min, max, count)
+            (entry.contiguous_head, keys.clone(), min, max, keys.len())
         } else {
-            (vec![], None, None, 0)
+            (0, vec![], None, None, 0)
         };
     Ok(Json(DebugOriginResponse {
         origin_node_id,

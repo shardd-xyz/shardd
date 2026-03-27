@@ -4,7 +4,6 @@ mod peer;
 mod state;
 mod sync;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use axum::routing::{get, post};
@@ -16,7 +15,7 @@ use shardd_storage::Storage;
 use shardd_types::{JoinResponse, NodeMeta};
 
 use crate::peer::PeerSet;
-use crate::state::{NodeState, SharedState};
+use crate::state::SharedState;
 
 #[derive(Parser)]
 #[command(name = "shardd-node", about = "Multi-writer replicated append-only event system")]
@@ -99,30 +98,19 @@ async fn main() -> anyhow::Result<()> {
     let mut peers = PeerSet::new(cli.max_peers, advertise_addr.clone());
     peers.merge(&peers_file.peers);
 
-    // Load events and compute heads.
+    // Load events from disk.
     let events_by_origin = storage.load_all_events().await?;
-    let mut contiguous_heads = BTreeMap::new();
-    for (origin, seqs) in &events_by_origin {
-        let mut head = 0u64;
-        while seqs.contains_key(&(head + 1)) {
-            head += 1;
-        }
-        contiguous_heads.insert(origin.clone(), head);
-    }
-
     let loaded_events: usize = events_by_origin.values().map(|m| m.len()).sum();
-    info!(events = loaded_events, heads = ?contiguous_heads, "loaded events from disk");
+    info!(events = loaded_events, "loaded events from disk");
 
-    let node_state = NodeState {
-        node_id: node_id.clone(),
-        addr: advertise_addr.clone(),
+    let shared = SharedState::new(
+        node_id.clone(),
+        advertise_addr.clone(),
         next_seq,
         peers,
         events_by_origin,
-        contiguous_heads,
         storage,
-    };
-    let shared = SharedState::new(node_state);
+    );
 
     // Bootstrap from all provided peers.
     if !cli.bootstrap.is_empty() {
@@ -142,9 +130,9 @@ async fn main() -> anyhow::Result<()> {
                 Ok(resp) => {
                     if let Ok(join_resp) = resp.json::<JoinResponse>().await {
                         {
-                            let mut st = shared.inner.write().await;
-                            st.peers.add(bootstrap_addr);
-                            st.peers.merge(&join_resp.peers);
+                            let mut p = shared.peers.lock().await;
+                            p.add(bootstrap_addr);
+                            p.merge(&join_resp.peers);
                         }
                         shared.persist_peers().await;
                         info!(

@@ -11,10 +11,7 @@ pub async fn sync_loop(state: SharedState, interval_ms: u64, fanout: usize) {
     let interval = Duration::from_millis(interval_ms);
     loop {
         tokio::time::sleep(interval).await;
-        let peers = {
-            let st = state.inner.read().await;
-            st.peers.random_sample(fanout)
-        };
+        let peers = state.peers.lock().await.random_sample(fanout);
         if peers.is_empty() {
             continue;
         }
@@ -71,22 +68,19 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
         .await
     {
         if let Ok(remote_peers) = resp.json::<Vec<String>>().await {
-            let mut st = state.inner.write().await;
-            let added_any = remote_peers.iter().any(|p| st.peers.add(p));
-            drop(st);
+            let mut peers = state.peers.lock().await;
+            let added_any = remote_peers.iter().any(|p| peers.add(p));
+            drop(peers);
             if added_any {
                 state.persist_peers().await;
             }
         }
     }
 
-    // Snapshot local heads (single read lock)
-    let local_heads: BTreeMap<String, u64> = {
-        let st = state.inner.read().await;
-        st.contiguous_heads.clone()
-    };
+    // Snapshot local heads (lock-free DashMap iteration)
+    let local_heads = state.get_heads();
 
-    // Fetch all missing ranges (no lock held during HTTP)
+    // Fetch all missing ranges (no locks held during HTTP)
     let mut all_events = Vec::new();
     for (origin, &peer_head) in &peer_heads {
         let my_head = local_heads.get(origin).copied().unwrap_or(0);
@@ -111,22 +105,19 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
         all_events.extend(events);
     }
 
-    // Batch insert all fetched events under a single lock
     if all_events.is_empty() {
         return Ok(0);
     }
-    let applied = state.insert_events_batch(all_events).await;
+    let applied = state.insert_events_batch(all_events);
     Ok(applied)
 }
 
 /// Eagerly push a single event to random peers.
-/// Uses the sync fanout from the peer set.
 pub async fn eager_push(state: &SharedState, event: &Event) {
     let peers = {
-        let st = state.inner.read().await;
-        // Push to more peers for faster propagation
-        let fanout = (st.peers.len() / 2).max(3).min(10);
-        st.peers.random_sample(fanout)
+        let p = state.peers.lock().await;
+        let fanout = (p.len() / 2).max(3).min(10);
+        p.random_sample(fanout)
     };
     let client = reqwest::Client::new();
     for peer in peers {
