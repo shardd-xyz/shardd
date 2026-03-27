@@ -31,6 +31,12 @@ enum Command {
     /// Create a new event
     #[command(allow_negative_numbers = true)]
     CreateEvent {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Account name
+        #[arg(long)]
+        account: String,
         /// Event amount
         #[arg(long, allow_hyphen_values = true)]
         amount: i64,
@@ -42,6 +48,8 @@ enum Command {
     Events,
     /// Show contiguous heads
     Heads,
+    /// Show all account balances
+    Balances,
     /// Trigger manual sync
     Sync,
     /// Debug info for a specific origin
@@ -95,10 +103,20 @@ async fn main() -> Result<()> {
                 .await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
-        Command::CreateEvent { amount, note } => {
+        Command::CreateEvent {
+            bucket,
+            account,
+            amount,
+            note,
+        } => {
             let resp: CreateEventResponse = client
                 .post(format!("{base}/events"))
-                .json(&CreateEventRequest { amount, note })
+                .json(&CreateEventRequest {
+                    bucket,
+                    account,
+                    amount,
+                    note,
+                })
                 .send()
                 .await?
                 .json()
@@ -117,6 +135,15 @@ async fn main() -> Result<()> {
         Command::Heads => {
             let resp: std::collections::BTreeMap<String, u64> = client
                 .get(format!("{base}/heads"))
+                .send()
+                .await?
+                .json()
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+        }
+        Command::Balances => {
+            let resp: BalancesResponse = client
+                .get(format!("{base}/balances"))
                 .send()
                 .await?
                 .json()

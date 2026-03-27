@@ -10,6 +10,8 @@ pub struct Event {
     pub origin_node_id: String,
     pub origin_seq: u64,
     pub created_at_unix_ms: u64,
+    pub bucket: String,
+    pub account: String,
     pub amount: i64,
     pub note: Option<String>,
 }
@@ -29,10 +31,15 @@ pub struct PeersFile {
     pub peers: Vec<String>,
 }
 
+/// Balance key: (bucket, account).
+pub type BalanceKey = (String, String);
+
 // ── API request / response types ──
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateEventRequest {
+    pub bucket: String,
+    pub account: String,
     pub amount: i64,
     pub note: Option<String>,
 }
@@ -76,7 +83,7 @@ pub struct HealthResponse {
     pub addr: String,
     pub peer_count: usize,
     pub event_count: usize,
-    pub balance: i64,
+    pub total_balance: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,9 +93,24 @@ pub struct StateResponse {
     pub next_seq: u64,
     pub peers: Vec<String>,
     pub event_count: usize,
-    pub balance: i64,
+    pub total_balance: i64,
     pub contiguous_heads: BTreeMap<String, u64>,
     pub checksum: String,
+}
+
+/// Per-bucket, per-account balance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountBalance {
+    pub bucket: String,
+    pub account: String,
+    pub balance: i64,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BalancesResponse {
+    pub accounts: Vec<AccountBalance>,
+    pub total_balance: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

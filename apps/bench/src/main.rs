@@ -186,6 +186,8 @@ async fn run_round(
     let resp = client
         .post(format!("{}/events", urls[0]))
         .json(&CreateEventRequest {
+            bucket: "bench".into(),
+            account: "default".into(),
             amount: 1,
             note: Some("bench".into()),
         })

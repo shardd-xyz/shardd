@@ -6,12 +6,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 use shardd_storage::Storage;
-use shardd_types::{Event, NodeMeta, PeersFile};
+use shardd_types::{AccountBalance, BalanceKey, Event, NodeMeta, PeersFile};
 
 use crate::peer::PeerSet;
 
 /// Per-origin event store: events + contiguous head bundled together.
-/// Accessed via DashMap per-shard lock — no global contention.
 pub struct OriginState {
     pub events: BTreeMap<u64, Event>,
     pub contiguous_head: u64,
@@ -27,19 +26,18 @@ impl OriginState {
     }
 }
 
+/// Per-account balance tracking.
+struct AccountState {
+    balance: AtomicI64,
+    event_count: AtomicUsize,
+}
+
 enum PersistOp {
     AppendEvent(Event),
     SaveMeta(NodeMeta),
     SavePeers(PeersFile),
 }
 
-/// Shared state with granular, per-field locking.
-///
-/// - `node_id`, `addr`: immutable, zero contention
-/// - `next_seq`: atomic, lock-free
-/// - `peers`: separate Mutex, doesn't block event operations
-/// - `origins`: DashMap sharded by origin_node_id, per-origin lock
-/// - `event_count`, `balance`: atomics for O(1) /health reads
 #[derive(Clone)]
 pub struct SharedState {
     pub node_id: Arc<str>,
@@ -47,8 +45,10 @@ pub struct SharedState {
     pub next_seq: Arc<AtomicU64>,
     pub peers: Arc<Mutex<PeerSet>>,
     pub origins: Arc<DashMap<String, OriginState>>,
+    /// Per-(bucket, account) balance tracking.
+    accounts: Arc<DashMap<BalanceKey, AccountState>>,
     pub event_count: Arc<AtomicUsize>,
-    pub balance: Arc<AtomicI64>,
+    pub total_balance: Arc<AtomicI64>,
     persist_tx: mpsc::UnboundedSender<PersistOp>,
 }
 
@@ -62,12 +62,24 @@ impl SharedState {
         storage: Storage,
     ) -> Self {
         let origins = DashMap::new();
+        let accounts: DashMap<BalanceKey, AccountState> = DashMap::new();
         let mut total_events = 0usize;
         let mut total_balance = 0i64;
 
         for (origin, events) in events_by_origin {
             total_events += events.len();
-            total_balance += events.values().map(|e| e.amount).sum::<i64>();
+            for event in events.values() {
+                total_balance += event.amount;
+                let key = (event.bucket.clone(), event.account.clone());
+                let entry = accounts
+                    .entry(key)
+                    .or_insert_with(|| AccountState {
+                        balance: AtomicI64::new(0),
+                        event_count: AtomicUsize::new(0),
+                    });
+                entry.balance.fetch_add(event.amount, Relaxed);
+                entry.event_count.fetch_add(1, Relaxed);
+            }
             let mut state = OriginState {
                 events,
                 contiguous_head: 0,
@@ -85,14 +97,26 @@ impl SharedState {
             next_seq: Arc::new(AtomicU64::new(next_seq)),
             peers: Arc::new(Mutex::new(peers)),
             origins: Arc::new(origins),
+            accounts: Arc::new(accounts),
             event_count: Arc::new(AtomicUsize::new(total_events)),
-            balance: Arc::new(AtomicI64::new(total_balance)),
+            total_balance: Arc::new(AtomicI64::new(total_balance)),
             persist_tx: tx,
         }
     }
 
-    /// Insert an event idempotently. Returns true if new.
-    /// Only locks the specific origin shard — other origins unaffected.
+    fn track_account(&self, event: &Event) {
+        let key = (event.bucket.clone(), event.account.clone());
+        let entry = self
+            .accounts
+            .entry(key)
+            .or_insert_with(|| AccountState {
+                balance: AtomicI64::new(0),
+                event_count: AtomicUsize::new(0),
+            });
+        entry.balance.fetch_add(event.amount, Relaxed);
+        entry.event_count.fetch_add(1, Relaxed);
+    }
+
     pub fn insert_event(&self, event: Event) -> bool {
         let origin = event.origin_node_id.clone();
         let seq = event.origin_seq;
@@ -109,17 +133,16 @@ impl SharedState {
 
         entry.events.insert(seq, event.clone());
         entry.recompute_head();
-        drop(entry); // release shard lock
+        drop(entry);
 
+        self.track_account(&event);
         self.event_count.fetch_add(1, Relaxed);
-        self.balance.fetch_add(amount, Relaxed);
+        self.total_balance.fetch_add(amount, Relaxed);
         let _ = self.persist_tx.send(PersistOp::AppendEvent(event));
         true
     }
 
-    /// Insert multiple events, grouped by origin for minimal shard contention.
     pub fn insert_events_batch(&self, events: Vec<Event>) -> usize {
-        // Group by origin to minimize shard lock acquisitions
         let mut by_origin: BTreeMap<String, Vec<Event>> = BTreeMap::new();
         for event in events {
             by_origin
@@ -142,6 +165,7 @@ impl SharedState {
                 if !entry.events.contains_key(&event.origin_seq) {
                     balance_delta += event.amount;
                     entry.events.insert(event.origin_seq, event.clone());
+                    self.track_account(&event);
                     to_persist.push(event);
                     inserted += 1;
                 }
@@ -151,7 +175,7 @@ impl SharedState {
 
         if inserted > 0 {
             self.event_count.fetch_add(inserted, Relaxed);
-            self.balance.fetch_add(balance_delta, Relaxed);
+            self.total_balance.fetch_add(balance_delta, Relaxed);
             for event in to_persist {
                 let _ = self.persist_tx.send(PersistOp::AppendEvent(event));
             }
@@ -159,21 +183,27 @@ impl SharedState {
         inserted
     }
 
-    /// Create a new local event. Lock-free seq allocation via atomic.
-    pub fn create_local_event(&self, amount: i64, note: Option<String>) -> Event {
+    pub fn create_local_event(
+        &self,
+        bucket: String,
+        account: String,
+        amount: i64,
+        note: Option<String>,
+    ) -> Event {
         let seq = self.next_seq.fetch_add(1, Relaxed);
         let event = Event {
             event_id: uuid::Uuid::new_v4().to_string(),
             origin_node_id: self.node_id.to_string(),
             origin_seq: seq,
             created_at_unix_ms: now_ms(),
+            bucket,
+            account,
             amount,
             note,
         };
 
         self.insert_event(event.clone());
 
-        // Persist updated next_seq
         let _ = self.persist_tx.send(PersistOp::SaveMeta(NodeMeta {
             node_id: self.node_id.to_string(),
             host: self
@@ -198,11 +228,37 @@ impl SharedState {
         self.event_count.load(Relaxed)
     }
 
-    pub fn balance(&self) -> i64 {
-        self.balance.load(Relaxed)
+    pub fn total_balance(&self) -> i64 {
+        self.total_balance.load(Relaxed)
     }
 
-    /// Collect contiguous heads from all origins.
+    /// Get balance for a specific (bucket, account).
+    pub fn account_balance(&self, bucket: &str, account: &str) -> i64 {
+        self.accounts
+            .get(&(bucket.to_string(), account.to_string()))
+            .map(|e| e.balance.load(Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Get all account balances.
+    pub fn all_balances(&self) -> Vec<AccountBalance> {
+        let mut balances: Vec<AccountBalance> = self
+            .accounts
+            .iter()
+            .map(|entry| {
+                let (bucket, account) = entry.key();
+                AccountBalance {
+                    bucket: bucket.clone(),
+                    account: account.clone(),
+                    balance: entry.balance.load(Relaxed),
+                    event_count: entry.event_count.load(Relaxed),
+                }
+            })
+            .collect();
+        balances.sort_by(|a, b| a.bucket.cmp(&b.bucket).then_with(|| a.account.cmp(&b.account)));
+        balances
+    }
+
     pub fn get_heads(&self) -> BTreeMap<String, u64> {
         self.origins
             .iter()
@@ -210,7 +266,6 @@ impl SharedState {
             .collect()
     }
 
-    /// Get events in [from_seq, to_seq] for a single origin.
     pub fn get_events_range(&self, origin: &str, from_seq: u64, to_seq: u64) -> Vec<Event> {
         let Some(entry) = self.origins.get(origin) else {
             return vec![];
@@ -222,9 +277,7 @@ impl SharedState {
             .collect()
     }
 
-    /// Deterministic checksum across all origins.
     pub fn checksum(&self) -> String {
-        // Collect and sort by origin for determinism
         let mut all: Vec<(String, Vec<(u64, Event)>)> = self
             .origins
             .iter()
@@ -244,10 +297,12 @@ impl SharedState {
         for (origin, events) in &all {
             for (seq, event) in events {
                 hasher.update(format!(
-                    "{}:{}:{}:{}:{}\n",
+                    "{}:{}:{}:{}:{}:{}:{}\n",
                     origin,
                     seq,
                     event.event_id,
+                    event.bucket,
+                    event.account,
                     event.amount,
                     event.note.as_deref().unwrap_or("")
                 ));
@@ -256,7 +311,6 @@ impl SharedState {
         format!("{:x}", hasher.finalize())
     }
 
-    /// All events sorted for presentation.
     pub fn all_events_sorted(&self) -> Vec<Event> {
         let mut events: Vec<Event> = self
             .origins

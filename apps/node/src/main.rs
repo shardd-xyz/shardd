@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/events/replicate", post(api::replicate_event))
         .route("/events/range", post(api::events_range))
         .route("/heads", get(api::get_heads))
+        .route("/balances", get(api::get_balances))
         .route("/sync", post(api::trigger_sync))
         .route("/debug/origin/{origin_node_id}", get(api::debug_origin))
         .layer(cors)

@@ -10,6 +10,8 @@ pub fn EventSection(
     events: Vec<Event>,
     sync_trace: Signal<SyncTrace>,
 ) -> Element {
+    let mut bucket_input = use_signal(|| "default".to_string());
+    let mut account_input = use_signal(|| "main".to_string());
     let mut amount_input = use_signal(|| String::new());
     let mut note_input = use_signal(|| String::new());
     let mut target_idx = use_signal(|| 0usize);
@@ -34,6 +36,26 @@ pub fn EventSection(
                             for (i, url) in urls.iter().enumerate() {
                                 option { value: "{i}", "{url}" }
                             }
+                        }
+                    }
+                    div { class: "min-w-[100px]",
+                        label { class: "block text-[11px] uppercase tracking-wider text-slate-500 mb-1.5", "Bucket" }
+                        input {
+                            r#type: "text",
+                            class: "w-full bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50",
+                            placeholder: "default",
+                            value: "{bucket_input}",
+                            oninput: move |e| bucket_input.set(e.value()),
+                        }
+                    }
+                    div { class: "min-w-[100px]",
+                        label { class: "block text-[11px] uppercase tracking-wider text-slate-500 mb-1.5", "Account" }
+                        input {
+                            r#type: "text",
+                            class: "w-full bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500/50",
+                            placeholder: "main",
+                            value: "{account_input}",
+                            oninput: move |e| account_input.set(e.value()),
                         }
                     }
                     div {
@@ -61,6 +83,8 @@ pub fn EventSection(
                         onclick: move |_| {
                             let urls = node_urls.clone();
                             let idx = *target_idx.read();
+                            let bucket = bucket_input.read().clone();
+                            let account = account_input.read().clone();
                             let amount_str = amount_input.read().clone();
                             let note_str = note_input.read().clone();
                             let mut sync_trace = sync_trace;
@@ -72,7 +96,7 @@ pub fn EventSection(
                                     return;
                                 };
                                 let note = if note_str.is_empty() { None } else { Some(note_str) };
-                                match api::create_event(url, amount, note).await {
+                                match api::create_event(url, &bucket, &account, amount, note).await {
                                     Ok(resp) => {
                                         let target_count = resp.event_count;
                                         let short_id = &resp.event.event_id[..8];
@@ -151,31 +175,28 @@ pub fn EventSection(
                         table { class: "w-full text-sm",
                             thead {
                                 tr { class: "border-b border-slate-800",
-                                    th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Origin" }
-                                    th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Seq" }
+                                    th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Bucket" }
+                                    th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Account" }
                                     th { class: "text-right text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Amount" }
                                     th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Note" }
-                                    th { class: "text-right text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Event ID" }
+                                    th { class: "text-left text-[11px] uppercase tracking-wider text-slate-500 font-medium px-4 py-3", "Origin" }
                                 }
                             }
                             tbody {
                                 for event in events.iter().rev().take(50) {
                                     {
                                         let origin_short = &event.origin_node_id[..8.min(event.origin_node_id.len())];
-                                        let event_id_short = &event.event_id[..8.min(event.event_id.len())];
                                         let note = event.note.as_deref().unwrap_or("-");
                                         let amount_color = if event.amount >= 0 { "text-emerald-400" } else { "text-rose-400" };
                                         let sign = if event.amount >= 0 { "+" } else { "" };
                                         rsx! {
                                             tr { class: "border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors",
-                                                td { class: "px-4 py-2.5",
-                                                    code { class: "text-xs text-slate-400", "{origin_short}..." }
-                                                }
-                                                td { class: "px-4 py-2.5 text-slate-300", "{event.origin_seq}" }
+                                                td { class: "px-4 py-2.5 text-slate-300", "{event.bucket}" }
+                                                td { class: "px-4 py-2.5 text-slate-300", "{event.account}" }
                                                 td { class: "px-4 py-2.5 text-right font-medium {amount_color}", "{sign}{event.amount}" }
                                                 td { class: "px-4 py-2.5 text-slate-400", "{note}" }
-                                                td { class: "px-4 py-2.5 text-right",
-                                                    code { class: "text-xs text-slate-600", "{event_id_short}..." }
+                                                td { class: "px-4 py-2.5",
+                                                    code { class: "text-xs text-slate-500", "{origin_short}..." }
                                                 }
                                             }
                                         }

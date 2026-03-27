@@ -5,7 +5,7 @@ use shardd_types::StateResponse;
 pub fn Overview(states: Vec<(String, StateResponse)>) -> Element {
     let node_count = states.len();
     let max_events = states.iter().map(|(_, s)| s.event_count).max().unwrap_or(0);
-    let balance = states.first().map(|(_, s)| s.balance).unwrap_or(0);
+    let balance = states.first().map(|(_, s)| s.total_balance).unwrap_or(0);
 
     let checksums: Vec<&str> = states.iter().map(|(_, s)| s.checksum.as_str()).collect();
     let converged = !checksums.is_empty() && checksums.windows(2).all(|w| w[0] == w[1]);

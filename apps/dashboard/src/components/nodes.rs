@@ -62,7 +62,7 @@ fn NodeCard(url: String, state: StateResponse, majority_checksum: String) -> Ele
                 }
                 div { class: "flex justify-between",
                     span { class: "text-slate-500", "Balance" }
-                    span { class: "text-white font-medium", "{state.balance}" }
+                    span { class: "text-white font-medium", "{state.total_balance}" }
                 }
                 div { class: "flex justify-between",
                     span { class: "text-slate-500", "Peers" }

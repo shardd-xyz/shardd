@@ -19,7 +19,7 @@ pub async fn health(State(state): State<SharedState>) -> Result<Json<HealthRespo
         addr: state.addr.to_string(),
         peer_count,
         event_count: state.event_count(),
-        balance: state.balance(),
+        total_balance: state.total_balance(),
     }))
 }
 
@@ -33,7 +33,7 @@ pub async fn get_state(State(state): State<SharedState>) -> Result<Json<StateRes
         next_seq: state.next_seq.load(std::sync::atomic::Ordering::Relaxed),
         peers,
         event_count: state.event_count(),
-        balance: state.balance(),
+        total_balance: state.total_balance(),
         contiguous_heads: state.get_heads(),
         checksum: state.checksum(),
     }))
@@ -89,22 +89,24 @@ pub async fn create_event(
     State(state): State<SharedState>,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<CreateEventResponse>> {
-    let event = state.create_local_event(req.amount, req.note);
+    let event = state.create_local_event(req.bucket, req.account, req.amount, req.note);
+    let balance = state.account_balance(&event.bucket, &event.account);
 
     info!(
         event_id = %event.event_id,
         seq = event.origin_seq,
+        bucket = %event.bucket,
+        account = %event.account,
         amount = event.amount,
         "local event created"
     );
 
-    // Eager push — no locks held
     sync::eager_push(&state, &event).await;
 
     Ok(Json(CreateEventResponse {
         event,
         event_count: state.event_count(),
-        balance: state.balance(),
+        balance,
     }))
 }
 
@@ -153,6 +155,17 @@ pub async fn events_range(
     Ok(Json(
         state.get_events_range(&req.origin_node_id, req.from_seq, req.to_seq),
     ))
+}
+
+// ── GET /balances ──
+
+pub async fn get_balances(State(state): State<SharedState>) -> Result<Json<BalancesResponse>> {
+    let accounts = state.all_balances();
+    let total_balance = state.total_balance();
+    Ok(Json(BalancesResponse {
+        accounts,
+        total_balance,
+    }))
 }
 
 // ── POST /sync ──

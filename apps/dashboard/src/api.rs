@@ -12,12 +12,19 @@ pub async fn fetch_events(base: &str) -> Result<Vec<Event>, reqwest::Error> {
 
 pub async fn create_event(
     base: &str,
+    bucket: &str,
+    account: &str,
     amount: i64,
     note: Option<String>,
 ) -> Result<CreateEventResponse, reqwest::Error> {
     reqwest::Client::new()
         .post(format!("{base}/events"))
-        .json(&CreateEventRequest { amount, note })
+        .json(&CreateEventRequest {
+            bucket: bucket.to_string(),
+            account: account.to_string(),
+            amount,
+            note,
+        })
         .send()
         .await?
         .json()
