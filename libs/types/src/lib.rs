@@ -10,10 +10,20 @@ pub struct Event {
     pub origin_node_id: String,
     pub origin_seq: u64,
     pub created_at_unix_ms: u64,
+    #[serde(default = "default_bucket")]
     pub bucket: String,
+    #[serde(default = "default_account")]
     pub account: String,
     pub amount: i64,
     pub note: Option<String>,
+}
+
+fn default_bucket() -> String {
+    "default".to_string()
+}
+
+fn default_account() -> String {
+    "main".to_string()
 }
 
 /// Persisted node identity and local sequence counter.
