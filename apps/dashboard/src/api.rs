@@ -24,6 +24,7 @@ pub async fn create_event(
             account: account.to_string(),
             amount,
             note,
+            max_overdraft: None,
         })
         .send()
         .await?

@@ -52,6 +52,10 @@ pub struct CreateEventRequest {
     pub account: String,
     pub amount: i64,
     pub note: Option<String>,
+    /// Maximum allowed overdraft for this charge. `None` means no overdraft (balance >= 0).
+    /// `Some(500)` allows balance to go as low as -500. Only enforced for debits.
+    #[serde(default)]
+    pub max_overdraft: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

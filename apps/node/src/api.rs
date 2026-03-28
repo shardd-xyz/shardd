@@ -89,7 +89,17 @@ pub async fn create_event(
     State(state): State<SharedState>,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<CreateEventResponse>> {
-    let event = state.create_local_event(req.bucket, req.account, req.amount, req.note);
+    let max_overdraft = req.max_overdraft;
+    let event = state
+        .create_local_event(req.bucket, req.account, req.amount, req.note, max_overdraft)
+        .map_err(|(balance, projected)| {
+            let limit = -(max_overdraft.unwrap_or(0) as i64);
+            AppError::InsufficientFunds {
+                balance,
+                projected_balance: projected,
+                limit,
+            }
+        })?;
     let balance = state.account_balance(&event.bucket, &event.account);
 
     info!(

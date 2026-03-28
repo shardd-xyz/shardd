@@ -82,12 +82,15 @@ async fn four_nodes_400rps_consistency_and_overdraft() {
 
     for node in &nodes {
         for _ in 0..EVENTS_PER_NODE {
+            // Pass max_overdraft=None with unlimited floor to preserve existing behavior
             node.create_local_event(
                 bucket.to_string(),
                 account.to_string(),
                 DEBIT_AMOUNT,
                 None,
-            );
+                Some(u64::MAX),
+            )
+            .unwrap();
         }
     }
 
@@ -196,4 +199,106 @@ async fn four_nodes_400rps_consistency_and_overdraft() {
         ((NUM_NODES - 1) as f64 / NUM_NODES as f64) * 100.0
     );
     println!("  Post-sync: full consistency achieved across all nodes\n");
+}
+
+#[tokio::test]
+async fn debit_denied_when_balance_insufficient() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Credit 100
+    node.create_local_event("default".into(), "main".into(), 100, None, None)
+        .unwrap();
+    assert_eq!(node.account_balance("default", "main"), 100);
+
+    // Debit -200 with no overdraft allowed → should fail
+    let result = node.create_local_event("default".into(), "main".into(), -200, None, None);
+    assert!(result.is_err());
+    let (balance, projected) = result.unwrap_err();
+    assert_eq!(balance, 100);
+    assert_eq!(projected, -100);
+
+    // Balance unchanged
+    assert_eq!(node.account_balance("default", "main"), 100);
+}
+
+#[tokio::test]
+async fn debit_allowed_within_overdraft_limit() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Credit 100
+    node.create_local_event("default".into(), "main".into(), 100, None, None)
+        .unwrap();
+
+    // Debit -200 with max_overdraft=200 → balance goes to -100, floor is -200 → allowed
+    let result =
+        node.create_local_event("default".into(), "main".into(), -200, None, Some(200));
+    assert!(result.is_ok());
+    assert_eq!(node.account_balance("default", "main"), -100);
+}
+
+#[tokio::test]
+async fn debit_denied_when_exceeding_overdraft_limit() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Credit 100
+    node.create_local_event("default".into(), "main".into(), 100, None, None)
+        .unwrap();
+
+    // Debit -400 with max_overdraft=200 → projected -300 < floor -200 → denied
+    let result =
+        node.create_local_event("default".into(), "main".into(), -400, None, Some(200));
+    assert!(result.is_err());
+    let (balance, projected) = result.unwrap_err();
+    assert_eq!(balance, 100);
+    assert_eq!(projected, -300);
+
+    // Balance unchanged
+    assert_eq!(node.account_balance("default", "main"), 100);
+}
+
+#[tokio::test]
+async fn credits_always_succeed_regardless_of_overdraft() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Drive balance negative via unlimited overdraft
+    node.create_local_event("default".into(), "main".into(), -500, None, Some(1000))
+        .unwrap();
+    assert_eq!(node.account_balance("default", "main"), -500);
+
+    // Credit +100 with max_overdraft=None → should always succeed (credits bypass check)
+    let result = node.create_local_event("default".into(), "main".into(), 100, None, None);
+    assert!(result.is_ok());
+    assert_eq!(node.account_balance("default", "main"), -400);
+}
+
+#[tokio::test]
+async fn replicated_events_bypass_overdraft_check() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Directly insert a replicated debit event that would violate overdraft
+    let event = shardd_types::Event {
+        event_id: "replicated-1".into(),
+        origin_node_id: "node-1".into(),
+        origin_seq: 1,
+        created_at_unix_ms: 0,
+        bucket: "default".into(),
+        account: "main".into(),
+        amount: -999,
+        note: None,
+    };
+    let inserted = node.insert_event(event);
+    assert!(inserted);
+    assert_eq!(node.account_balance("default", "main"), -999);
+}
+
+#[tokio::test]
+async fn exact_balance_debit_succeeds() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4);
+
+    // Credit 100, then debit exactly -100 with no overdraft → balance hits 0 exactly
+    node.create_local_event("default".into(), "main".into(), 100, None, None)
+        .unwrap();
+    let result = node.create_local_event("default".into(), "main".into(), -100, None, None);
+    assert!(result.is_ok());
+    assert_eq!(node.account_balance("default", "main"), 0);
 }

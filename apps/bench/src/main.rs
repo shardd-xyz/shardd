@@ -190,6 +190,7 @@ async fn run_round(
             account: "default".into(),
             amount: 1,
             note: Some("bench".into()),
+            max_overdraft: None,
         })
         .timeout(Duration::from_secs(5))
         .send()

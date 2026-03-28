@@ -117,7 +117,9 @@ impl SharedState {
         entry.event_count.fetch_add(1, Relaxed);
     }
 
-    pub fn insert_event(&self, event: Event) -> bool {
+    /// Insert an event into the origin store. If `balance_pre_applied` is true,
+    /// skip balance tracking (used when `create_local_event` already atomically applied it).
+    fn insert_event_inner(&self, event: Event, balance_pre_applied: bool) -> bool {
         let origin = event.origin_node_id.clone();
         let seq = event.origin_seq;
         let amount = event.amount;
@@ -135,11 +137,17 @@ impl SharedState {
         entry.recompute_head();
         drop(entry);
 
-        self.track_account(&event);
+        if !balance_pre_applied {
+            self.track_account(&event);
+        }
         self.event_count.fetch_add(1, Relaxed);
         self.total_balance.fetch_add(amount, Relaxed);
         let _ = self.persist_tx.send(PersistOp::AppendEvent(event));
         true
+    }
+
+    pub fn insert_event(&self, event: Event) -> bool {
+        self.insert_event_inner(event, false)
     }
 
     pub fn insert_events_batch(&self, events: Vec<Event>) -> usize {
@@ -183,13 +191,59 @@ impl SharedState {
         inserted
     }
 
+    /// Atomically debit an account, rejecting if the resulting balance would fall below `floor`.
+    /// Returns `Ok(new_balance)` on success, `Err((current_balance, projected_balance))` on rejection.
+    fn try_debit_account(
+        &self,
+        bucket: &str,
+        account: &str,
+        amount: i64,
+        floor: i64,
+    ) -> Result<i64, (i64, i64)> {
+        let key = (bucket.to_string(), account.to_string());
+        let entry = self.accounts.entry(key).or_insert_with(|| AccountState {
+            balance: AtomicI64::new(0),
+            event_count: AtomicUsize::new(0),
+        });
+
+        let result = entry.balance.fetch_update(Relaxed, Relaxed, |current| {
+            let new = current + amount;
+            if new >= floor {
+                Some(new)
+            } else {
+                None
+            }
+        });
+
+        match result {
+            Ok(old) => {
+                entry.event_count.fetch_add(1, Relaxed);
+                Ok(old + amount)
+            }
+            Err(current) => Err((current, current + amount)),
+        }
+    }
+
     pub fn create_local_event(
         &self,
         bucket: String,
         account: String,
         amount: i64,
         note: Option<String>,
-    ) -> Event {
+        max_overdraft: Option<u64>,
+    ) -> Result<Event, (i64, i64)> {
+        // For debits, atomically check and apply the balance
+        let balance_pre_applied = if amount < 0 {
+            let floor = match max_overdraft {
+                Some(v) => -(v.min(i64::MAX as u64) as i64),
+                None => 0,
+            };
+            self.try_debit_account(&bucket, &account, amount, floor)?;
+            true
+        } else {
+            false
+        };
+
         let seq = self.next_seq.fetch_add(1, Relaxed);
         let event = Event {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -202,7 +256,7 @@ impl SharedState {
             note,
         };
 
-        self.insert_event(event.clone());
+        self.insert_event_inner(event.clone(), balance_pre_applied);
 
         let _ = self.persist_tx.send(PersistOp::SaveMeta(NodeMeta {
             node_id: self.node_id.to_string(),
@@ -221,7 +275,7 @@ impl SharedState {
             next_seq: seq + 1,
         }));
 
-        event
+        Ok(event)
     }
 
     pub fn event_count(&self) -> usize {

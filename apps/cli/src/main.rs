@@ -116,6 +116,7 @@ async fn main() -> Result<()> {
                     account,
                     amount,
                     note,
+                    max_overdraft: None,
                 })
                 .send()
                 .await?
