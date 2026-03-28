@@ -4,6 +4,9 @@ mod peer;
 mod state;
 mod sync;
 
+#[cfg(test)]
+mod test_overdraft;
+
 use std::path::PathBuf;
 
 use axum::routing::{get, post};

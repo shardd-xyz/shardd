@@ -1,10 +1,46 @@
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use shardd_types::{Event, NodeMeta, PeersFile};
+
+/// Async storage backend abstraction for persist operations.
+pub trait StorageBackend: Send + Sync + 'static {
+    fn append_event(&self, event: &Event) -> impl Future<Output = Result<()>> + Send;
+    fn save_node_meta(&self, meta: &NodeMeta) -> impl Future<Output = Result<()>> + Send;
+    fn save_peers(&self, pf: &PeersFile) -> impl Future<Output = Result<()>> + Send;
+}
+
+impl StorageBackend for Storage {
+    async fn append_event(&self, event: &Event) -> Result<()> {
+        Storage::append_event(self, event).await
+    }
+    async fn save_node_meta(&self, meta: &NodeMeta) -> Result<()> {
+        Storage::save_node_meta(self, meta).await
+    }
+    async fn save_peers(&self, pf: &PeersFile) -> Result<()> {
+        Storage::save_peers(self, pf).await
+    }
+}
+
+/// No-op storage for testing. Discards all writes.
+#[derive(Debug, Clone, Default)]
+pub struct NullStorage;
+
+impl StorageBackend for NullStorage {
+    async fn append_event(&self, _: &Event) -> Result<()> {
+        Ok(())
+    }
+    async fn save_node_meta(&self, _: &NodeMeta) -> Result<()> {
+        Ok(())
+    }
+    async fn save_peers(&self, _: &PeersFile) -> Result<()> {
+        Ok(())
+    }
+}
 
 /// Handles all file-based persistence under a config directory.
 #[derive(Debug, Clone)]

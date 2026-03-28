@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
-use shardd_storage::Storage;
+use shardd_storage::StorageBackend;
 use shardd_types::{AccountBalance, BalanceKey, Event, NodeMeta, PeersFile};
 
 use crate::peer::PeerSet;
@@ -53,13 +53,13 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    pub fn new(
+    pub fn new<S: StorageBackend>(
         node_id: String,
         addr: String,
         next_seq: u64,
         peers: PeerSet,
         events_by_origin: BTreeMap<String, BTreeMap<u64, Event>>,
-        storage: Storage,
+        storage: S,
     ) -> Self {
         let origins = DashMap::new();
         let accounts: DashMap<BalanceKey, AccountState> = DashMap::new();
@@ -337,7 +337,7 @@ impl SharedState {
     }
 }
 
-async fn persist_loop(storage: Storage, mut rx: mpsc::UnboundedReceiver<PersistOp>) {
+async fn persist_loop<S: StorageBackend>(storage: S, mut rx: mpsc::UnboundedReceiver<PersistOp>) {
     while let Some(op) = rx.recv().await {
         match op {
             PersistOp::AppendEvent(event) => {
