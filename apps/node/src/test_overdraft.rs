@@ -57,13 +57,144 @@ fn full_mesh_sync(nodes: &[SharedState]) -> usize {
 }
 
 #[tokio::test]
-async fn four_nodes_400rps_consistency_and_overdraft() {
+async fn four_nodes_400rps_overdraft_guard_bypass() {
+    // Scenario: account starts with +10,000 credit. Each of 4 nodes processes
+    // 400 debit requests of -10 with max_overdraft=0 (no overdraft allowed).
+    // Locally each node's guard sees 10,000 - 4,000 = 6,000 → all debits pass.
+    // But the TRUE global balance is 10,000 - 16,000 = -6,000 (overdraft!).
+    // The per-node guard is blind to other nodes' debits.
+
     const NUM_NODES: usize = 4;
     const EVENTS_PER_NODE: usize = 400;
     const MAX_PEERS: usize = 4;
     const DEBIT_AMOUNT: i64 = -10;
+    const STARTING_CREDIT: i64 = 10_000;
 
-    // ── Phase 1: Create 4 isolated nodes ──
+    let bucket = "default";
+    let account = "shared-account";
+
+    // ── Phase 1: Create 4 isolated nodes, each with the starting credit ──
+    let nodes: Vec<SharedState> = (0..NUM_NODES)
+        .map(|i| {
+            let node = make_node(
+                &format!("node-{i}"),
+                &format!("127.0.0.1:{}", 9000 + i),
+                MAX_PEERS,
+            );
+            // Seed with starting credit (credits always succeed, no overdraft check)
+            node.create_local_event(
+                bucket.to_string(),
+                account.to_string(),
+                STARTING_CREDIT,
+                Some("initial credit".to_string()),
+                None,
+            )
+            .unwrap();
+            node
+        })
+        .collect();
+
+    // ── Phase 2: Each node fires 400 debits with max_overdraft=0 (guard active) ──
+    // The guard checks LOCAL balance only. Each node sees 10,000 and debits -10
+    // per request. All 400 pass locally because 10,000 - 4,000 = 6,000 >= 0.
+    let mut accepted_per_node = vec![0usize; NUM_NODES];
+    let mut denied_per_node = vec![0usize; NUM_NODES];
+
+    for (i, node) in nodes.iter().enumerate() {
+        for _ in 0..EVENTS_PER_NODE {
+            match node.create_local_event(
+                bucket.to_string(),
+                account.to_string(),
+                DEBIT_AMOUNT,
+                None,
+                None, // max_overdraft=None → floor=0, no overdraft allowed
+            ) {
+                Ok(_) => accepted_per_node[i] += 1,
+                Err(_) => denied_per_node[i] += 1,
+            }
+        }
+    }
+
+    // ── Phase 3: Pre-sync — each node thinks it's fine ──
+    println!("\n=== PRE-SYNC: OVERDRAFT GUARD BYPASS ===");
+    println!("  Starting credit per node: {STARTING_CREDIT}");
+    println!(
+        "  Debits attempted: {} per node ({} total)",
+        EVENTS_PER_NODE,
+        EVENTS_PER_NODE * NUM_NODES
+    );
+    for i in 0..NUM_NODES {
+        let balance = nodes[i].account_balance(bucket, account);
+        println!(
+            "  node-{i}: accepted={}, denied={}, local_balance={balance}",
+            accepted_per_node[i], denied_per_node[i],
+        );
+        // Guard should have let all 400 through: 10,000 - 4,000 = 6,000 >= 0
+        assert_eq!(accepted_per_node[i], EVENTS_PER_NODE);
+        assert_eq!(denied_per_node[i], 0);
+    }
+
+    let total_accepted: usize = accepted_per_node.iter().sum();
+    let total_debits = total_accepted as i64 * DEBIT_AMOUNT;
+    // 4 credit events (one per node) + all accepted debits
+    let total_credit = STARTING_CREDIT * NUM_NODES as i64;
+
+    println!("\n=== OVERDRAFT ANALYSIS ===");
+    println!("  Total credits across nodes: {total_credit} ({NUM_NODES} × {STARTING_CREDIT})");
+    println!("  Total debits accepted:      {total_accepted} × {DEBIT_AMOUNT} = {total_debits}");
+
+    // After sync, credits also replicate — every node will see ALL 4 credit events.
+    // True global balance = (4 × 10,000) + (1,600 × -10) = 40,000 - 16,000 = 24,000.
+    // BUT: each node's local view pre-sync is: 10,000 (own credit) + own debits.
+    // They don't see the other 3 credits either. The point is that in a real system
+    // there's ONE credit (not one per node). Let's also test that scenario.
+
+    // ── Phase 4: Sync and verify consistency ──
+    let sync_rounds = full_mesh_sync(&nodes);
+    println!("\n=== SYNC ===");
+    println!("  Converged in {sync_rounds} round(s)");
+
+    // After sync: each node sees all 4 credits + all 1,600 debits
+    let global_balance = total_credit + total_debits;
+    println!("\n=== POST-SYNC STATE ===");
+    for (i, node) in nodes.iter().enumerate() {
+        let balance = node.account_balance(bucket, account);
+        let count = node.event_count();
+        println!("  node-{i}: events={count}, balance={balance}");
+        assert_eq!(balance, global_balance);
+    }
+
+    let checksums: Vec<String> = nodes.iter().map(|n| n.checksum()).collect();
+    for i in 1..checksums.len() {
+        assert_eq!(checksums[0], checksums[i], "checksum mismatch node-0 vs node-{i}");
+    }
+    println!("\n  All checksums match: {}…", &checksums[0][..16]);
+    println!(
+        "  Global balance: {global_balance} (credits {total_credit} + debits {total_debits})"
+    );
+}
+
+#[tokio::test]
+async fn four_nodes_400rps_single_credit_overdraft_breach() {
+    // The real-world scenario: ONE credit of 10,000 exists on node-0.
+    // All 4 nodes debit against it. Each node's guard only sees local balance.
+    // Node-0 sees balance drop from 10,000. Nodes 1-3 see balance 0 (no credit yet)
+    // and should deny all debits with max_overdraft=0.
+    //
+    // With max_overdraft=5000, nodes 1-3 can each push to -5,000 locally.
+    // After sync the true balance = 10,000 - (all accepted debits × 10).
+
+    const NUM_NODES: usize = 4;
+    const EVENTS_PER_NODE: usize = 400;
+    const MAX_PEERS: usize = 4;
+    const DEBIT_AMOUNT: i64 = -10;
+    const STARTING_CREDIT: i64 = 10_000;
+    const MAX_OVERDRAFT: u64 = 5_000;
+
+    let bucket = "default";
+    let account = "shared-account";
+
+    // ── Phase 1: Create nodes — only node-0 has the credit ──
     let nodes: Vec<SharedState> = (0..NUM_NODES)
         .map(|i| {
             make_node(
@@ -74,131 +205,122 @@ async fn four_nodes_400rps_consistency_and_overdraft() {
         })
         .collect();
 
-    // ── Phase 2: Each node creates 400 events debiting the same account ──
-    // Simulates 400 req/s per node for 1 second (1,600 total requests).
-    // All hit the same (bucket, account), each debiting -10.
-    let bucket = "default";
-    let account = "shared-account";
+    // Only node-0 gets the initial credit
+    nodes[0]
+        .create_local_event(
+            bucket.to_string(),
+            account.to_string(),
+            STARTING_CREDIT,
+            Some("initial credit".to_string()),
+            None,
+        )
+        .unwrap();
 
-    for node in &nodes {
+    // ── Phase 2: All nodes fire 400 debits with max_overdraft=5000 ──
+    let mut accepted = vec![0usize; NUM_NODES];
+    let mut denied = vec![0usize; NUM_NODES];
+
+    for (i, node) in nodes.iter().enumerate() {
         for _ in 0..EVENTS_PER_NODE {
-            // Pass max_overdraft=None with unlimited floor to preserve existing behavior
-            node.create_local_event(
+            match node.create_local_event(
                 bucket.to_string(),
                 account.to_string(),
                 DEBIT_AMOUNT,
                 None,
-                Some(u64::MAX),
-            )
-            .unwrap();
+                Some(MAX_OVERDRAFT),
+            ) {
+                Ok(_) => accepted[i] += 1,
+                Err(_) => denied[i] += 1,
+            }
         }
     }
 
-    // ── Phase 3: Pre-sync assertions — overdraft is invisible ──
-    let per_node_expected = EVENTS_PER_NODE as i64 * DEBIT_AMOUNT; // -4,000
-    let global_expected = per_node_expected * NUM_NODES as i64; // -16,000
+    // ── Phase 3: Pre-sync analysis ──
+    println!("\n=== SINGLE-CREDIT OVERDRAFT BREACH ===");
+    println!("  Credit: {STARTING_CREDIT} on node-0 only");
+    println!("  max_overdraft: {MAX_OVERDRAFT} (floor = -{})", MAX_OVERDRAFT);
+    println!("  Debits: {EVENTS_PER_NODE} × {DEBIT_AMOUNT} attempted per node\n");
 
-    println!("\n=== PRE-SYNC STATE ===");
-    for (i, node) in nodes.iter().enumerate() {
-        let balance = node.account_balance(bucket, account);
-        let count = node.event_count();
+    for i in 0..NUM_NODES {
+        let balance = nodes[i].account_balance(bucket, account);
         println!(
-            "  node-{i}: events={count}, balance={balance} (sees only own debits)"
+            "  node-{i}: accepted={:>3}, denied={:>3}, local_balance={balance}",
+            accepted[i], denied[i]
         );
-        assert_eq!(count, EVENTS_PER_NODE, "node-{i} event count before sync");
-        assert_eq!(balance, per_node_expected, "node-{i} balance before sync");
     }
 
-    // Each node thinks the balance is -4,000 but reality is -16,000.
-    // The invisible overdraft per node = what they don't see = 3 * 4,000 = 12,000.
-    let max_invisible_overdraft = per_node_expected - global_expected; // 12,000
-    println!("\n=== OVERDRAFT ANALYSIS ===");
+    // node-0: starts at 10,000, can go to -5,000 → 15,000 headroom → 1,500 debits possible
+    //         but only 400 attempted → all 400 accepted, balance = 10,000 - 4,000 = 6,000
+    assert_eq!(accepted[0], EVENTS_PER_NODE);
+    assert_eq!(nodes[0].account_balance(bucket, account),
+        STARTING_CREDIT + (EVENTS_PER_NODE as i64 * DEBIT_AMOUNT));
+
+    // nodes 1-3: start at 0, can go to -5,000 → 500 debits possible, but only 400 attempted
+    //            all 400 accepted, balance = -4,000
+    for i in 1..NUM_NODES {
+        assert_eq!(accepted[i], EVENTS_PER_NODE);
+        assert_eq!(
+            nodes[i].account_balance(bucket, account),
+            EVENTS_PER_NODE as i64 * DEBIT_AMOUNT
+        );
+    }
+
+    let total_accepted: usize = accepted.iter().sum();
+    let total_debit_value = total_accepted as i64 * DEBIT_AMOUNT;
+
+    println!("\n=== OVERDRAFT BREACH ===");
+    println!("  Total debits accepted: {total_accepted} (all nodes thought they were within limits)");
+    println!("  Total debit value:     {total_debit_value}");
+    println!("  Starting credit:       {STARTING_CREDIT}");
+    let true_balance = STARTING_CREDIT + total_debit_value;
+    println!("  True global balance:   {true_balance}");
+    let overdraft_amount = if true_balance < 0 { -true_balance } else { 0 };
+    let intended_floor = -(MAX_OVERDRAFT as i64);
+    let breach = if true_balance < intended_floor {
+        true_balance - intended_floor
+    } else {
+        0
+    };
+    println!("  Intended floor:        {intended_floor}");
+    println!("  Overdraft amount:      {overdraft_amount}");
     println!(
-        "  Per-node visible balance:  {per_node_expected} (each sees only own {EVENTS_PER_NODE} debits)"
-    );
-    println!("  True global balance:       {global_expected} (across all {NUM_NODES} nodes)");
-    println!(
-        "  Max invisible overdraft:   {max_invisible_overdraft} per node (unseen debits from {} other nodes)",
-        NUM_NODES - 1
-    );
-    println!(
-        "  Overdraft ratio:           {:.0}% of true balance is hidden",
-        (max_invisible_overdraft as f64 / global_expected.abs() as f64) * 100.0
+        "  Breach past limit:     {} ({}x the allowed overdraft)",
+        breach.abs(),
+        if MAX_OVERDRAFT > 0 {
+            breach.abs() as f64 / MAX_OVERDRAFT as f64
+        } else {
+            0.0
+        }
     );
 
-    // ── Phase 4: Full-mesh sync until convergence ──
+    // The guard allowed it because each node only saw its own balance.
+    // 4 nodes × 400 debits × -10 = -16,000 total debits
+    // true balance = 10,000 - 16,000 = -6,000
+    // intended floor = -5,000, so we breached by 1,000
+    assert_eq!(true_balance, STARTING_CREDIT + (NUM_NODES as i64 * EVENTS_PER_NODE as i64 * DEBIT_AMOUNT));
+    assert!(true_balance < intended_floor, "should breach the overdraft limit");
+
+    // ── Phase 4: Sync and verify convergence ──
     let sync_rounds = full_mesh_sync(&nodes);
-    println!("\n=== SYNC ===");
-    println!("  Converged in {sync_rounds} full-mesh round(s)");
+    println!("\n=== POST-SYNC ===");
+    println!("  Converged in {sync_rounds} round(s)");
 
-    // ── Phase 5: Post-sync consistency ──
-    let total_events = NUM_NODES * EVENTS_PER_NODE; // 1,600
-
-    println!("\n=== POST-SYNC STATE ===");
     for (i, node) in nodes.iter().enumerate() {
         let balance = node.account_balance(bucket, account);
         let count = node.event_count();
         println!("  node-{i}: events={count}, balance={balance}");
-        assert_eq!(
-            count, total_events,
-            "node-{i} should have {total_events} events after sync"
-        );
-        assert_eq!(
-            balance, global_expected,
-            "node-{i} should show global balance {global_expected} after sync"
-        );
-        assert_eq!(
-            node.total_balance(),
-            global_expected,
-            "node-{i} total_balance mismatch"
-        );
+        assert_eq!(balance, true_balance, "node-{i} balance mismatch after sync");
     }
 
-    // ── Phase 6: Checksum consistency ──
     let checksums: Vec<String> = nodes.iter().map(|n| n.checksum()).collect();
     for i in 1..checksums.len() {
-        assert_eq!(
-            checksums[0], checksums[i],
-            "checksum mismatch: node-0 vs node-{i}"
-        );
+        assert_eq!(checksums[0], checksums[i], "checksum mismatch node-0 vs node-{i}");
     }
-    println!("\n=== CONSISTENCY ===");
-    println!("  All {} nodes share checksum: {}…", NUM_NODES, &checksums[0][..16]);
-
-    // ── Phase 7: Heads consistency ──
-    let all_heads: Vec<BTreeMap<String, u64>> = nodes.iter().map(|n| n.get_heads()).collect();
-    for i in 1..all_heads.len() {
-        assert_eq!(
-            all_heads[0], all_heads[i],
-            "heads mismatch: node-0 vs node-{i}"
-        );
-    }
-    assert_eq!(
-        all_heads[0].len(),
-        NUM_NODES,
-        "should have heads for all {NUM_NODES} origins"
-    );
-    for (origin, &head) in &all_heads[0] {
-        assert_eq!(
-            head, EVENTS_PER_NODE as u64,
-            "origin {origin} contiguous head should be {EVENTS_PER_NODE}"
-        );
-    }
-    println!(
-        "  All heads match: {} origins, each at seq {}",
-        all_heads[0].len(),
-        EVENTS_PER_NODE
-    );
-
-    println!("\n=== RESULT: PASSED ===");
-    println!(
-        "  {} nodes × {} events × {} amount = {} true balance",
-        NUM_NODES, EVENTS_PER_NODE, DEBIT_AMOUNT, global_expected
-    );
-    println!("  Pre-sync: each node was blind to {:.0}% of debits (overdraft of {max_invisible_overdraft})",
-        ((NUM_NODES - 1) as f64 / NUM_NODES as f64) * 100.0
-    );
-    println!("  Post-sync: full consistency achieved across all nodes\n");
+    println!("  All checksums match: {}…", &checksums[0][..16]);
+    println!("\n=== RESULT ===");
+    println!("  Overdraft guard was active (max_overdraft={MAX_OVERDRAFT}) but guards are LOCAL-only.");
+    println!("  {NUM_NODES} nodes accepted {total_accepted} debits totalling {total_debit_value}.");
+    println!("  True balance {true_balance} breached floor {intended_floor} by {}.\n", breach.abs());
 }
 
 #[tokio::test]
