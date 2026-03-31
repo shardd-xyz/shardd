@@ -7,14 +7,13 @@ mod sync;
 #[cfg(test)]
 mod test_overdraft;
 
-use std::path::PathBuf;
-
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Parser;
 use tracing::{info, warn};
 
-use shardd_storage::Storage;
+use shardd_storage::postgres::PostgresStorage;
+use shardd_storage::StorageBackend;
 use shardd_types::{JoinResponse, NodeMeta};
 
 use crate::peer::PeerSet;
@@ -35,9 +34,9 @@ struct Cli {
     #[arg(long)]
     advertise_addr: Option<String>,
 
-    /// Config / data directory
-    #[arg(long)]
-    config_dir: PathBuf,
+    /// PostgreSQL connection URL
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: String,
 
     /// Bootstrap peer addresses (host:port), may be repeated
     #[arg(long)]
@@ -72,50 +71,69 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| listen_addr.clone());
 
-    // Initialize storage.
-    let storage = Storage::new(&cli.config_dir);
-    storage.init().await?;
+    // Connect to PostgreSQL and run migrations.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&cli.database_url)
+        .await?;
+    let storage = PostgresStorage::new(pool);
+    storage.run_migrations().await?;
+    info!("database connected, migrations applied");
 
     // Load or create node identity.
-    let (node_id, next_seq) = match storage.load_node_meta().await? {
-        Some(meta) => {
-            info!(node_id = %meta.node_id, next_seq = meta.next_seq, "loaded existing node");
-            (meta.node_id, meta.next_seq)
-        }
-        None => {
-            let id = uuid::Uuid::new_v4().to_string();
-            let meta = NodeMeta {
-                node_id: id.clone(),
-                host: cli.host.clone(),
-                port: cli.port,
-                next_seq: 1,
-            };
-            storage.save_node_meta(&meta).await?;
-            info!(node_id = %id, "created new node");
-            (id, 1)
+    let (node_id, next_seq) = match storage.load_node_meta_by_id("").await? {
+        // Try to find any existing node_meta row for this node.
+        // If none, create a new one.
+        _ => {
+            // Check if we have a persisted identity
+            let rows = sqlx::query_as::<_, (String, i64)>(
+                "SELECT node_id, next_seq FROM node_meta LIMIT 1",
+            )
+            .fetch_optional(storage.pool())
+            .await?;
+
+            match rows {
+                Some((id, seq)) => {
+                    info!(node_id = %id, next_seq = seq, "loaded existing node");
+                    (id, seq as u64)
+                }
+                None => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let meta = NodeMeta {
+                        node_id: id.clone(),
+                        host: cli.host.clone(),
+                        port: cli.port,
+                        next_seq: 1,
+                    };
+                    storage.save_node_meta(&meta).await?;
+                    info!(node_id = %id, "created new node");
+                    (id, 1)
+                }
+            }
         }
     };
 
-    // Load peers.
-    let peers_file = storage.load_peers().await?;
+    // Load persisted peers.
+    let persisted_peers = storage.load_peers().await?;
     let mut peers = PeerSet::new(cli.max_peers, advertise_addr.clone());
-    peers.merge(&peers_file.peers);
+    peers.merge(&persisted_peers);
 
-    // Load events from disk.
-    let events_by_origin = storage.load_all_events().await?;
-    let loaded_events: usize = events_by_origin.values().map(|m| m.len()).sum();
-    info!(events = loaded_events, "loaded events from disk");
-
+    // Build shared state — rebuilds balance/head caches from Postgres.
     let shared = SharedState::new(
         node_id.clone(),
         advertise_addr.clone(),
         next_seq,
         peers,
-        events_by_origin,
         storage,
+    )
+    .await;
+
+    info!(
+        events = shared.event_count(),
+        "state rebuilt from database"
     );
 
-    // Bootstrap from all provided peers.
+    // Bootstrap from provided peers.
     if !cli.bootstrap.is_empty() {
         let client = reqwest::Client::new();
         for bootstrap_addr in &cli.bootstrap {
@@ -173,10 +191,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/balances", get(api::get_balances))
         .route("/sync", post(api::trigger_sync))
         .route("/debug/origin/{origin_node_id}", get(api::debug_origin))
+        .route("/collapsed", get(api::get_collapsed))
+        .route("/collapsed/{bucket}/{account}", get(api::get_collapsed_account))
         .layer(cors)
         .with_state(shared);
 
-    info!(listen = %listen_addr, advertise = %advertise_addr, config_dir = %cli.config_dir.display(), "starting shardd-node");
+    info!(listen = %listen_addr, advertise = %advertise_addr, "starting shardd-node");
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

@@ -1,198 +1,197 @@
 use dashmap::DashMap;
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 
-use shardd_storage::StorageBackend;
-use shardd_types::{AccountBalance, BalanceKey, Event, NodeMeta, PeersFile};
+use shardd_storage::{InsertResult, StorageBackend};
+use shardd_types::{AccountBalance, BalanceKey, Event, NodeMeta};
 
 use crate::peer::PeerSet;
 
-/// Per-origin event store: events + contiguous head bundled together.
-pub struct OriginState {
-    pub events: BTreeMap<u64, Event>,
-    pub contiguous_head: u64,
-}
-
-impl OriginState {
-    fn recompute_head(&mut self) {
-        let mut head = self.contiguous_head;
-        while self.events.contains_key(&(head + 1)) {
-            head += 1;
-        }
-        self.contiguous_head = head;
-    }
-}
-
-/// Per-account balance tracking.
+/// Per-account balance tracking (in-memory cache).
 struct AccountState {
     balance: AtomicI64,
     event_count: AtomicUsize,
 }
 
-enum PersistOp {
-    AppendEvent(Event),
-    SaveMeta(NodeMeta),
-    SavePeers(PeersFile),
+/// Collapsed state types for the API.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OriginProgress {
+    pub head: u64,
+    pub max_known: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CollapsedBalance {
+    pub balance: i64,
+    pub status: String,
+    pub contributing_origins: BTreeMap<String, OriginProgress>,
+}
+
+pub type CollapsedState = BTreeMap<String, CollapsedBalance>;
+
+// ── SharedState ──────────────────────────────────────────────────────
+
 #[derive(Clone)]
-pub struct SharedState {
+pub struct SharedState<S: StorageBackend> {
     pub node_id: Arc<str>,
     pub addr: Arc<str>,
     pub next_seq: Arc<AtomicU64>,
     pub peers: Arc<Mutex<PeerSet>>,
-    pub origins: Arc<DashMap<String, OriginState>>,
-    /// Per-(bucket, account) balance tracking.
+    pub storage: Arc<S>,
+    /// Per-(bucket, account) balance tracking (in-memory cache).
     accounts: Arc<DashMap<BalanceKey, AccountState>>,
+    /// Contiguous head per origin (in-memory cache).
+    heads: Arc<DashMap<String, u64>>,
+    /// Account → set of origins that contributed events (for collapsed state).
+    account_origins: Arc<DashMap<BalanceKey, HashSet<String>>>,
+    /// Origin → max known sequence (cached to avoid N+1 queries).
+    max_known_seqs: Arc<DashMap<String, u64>>,
     pub event_count: Arc<AtomicUsize>,
     pub total_balance: Arc<AtomicI64>,
-    persist_tx: mpsc::UnboundedSender<PersistOp>,
 }
 
-impl SharedState {
-    pub fn new<S: StorageBackend>(
+impl<S: StorageBackend> SharedState<S> {
+    /// Build a new SharedState, rebuilding caches from the storage backend.
+    pub async fn new(
         node_id: String,
         addr: String,
         next_seq: u64,
         peers: PeerSet,
-        events_by_origin: BTreeMap<String, BTreeMap<u64, Event>>,
         storage: S,
     ) -> Self {
-        let origins = DashMap::new();
+        let storage = Arc::new(storage);
         let accounts: DashMap<BalanceKey, AccountState> = DashMap::new();
+        let heads: DashMap<String, u64> = DashMap::new();
+        let account_origins: DashMap<BalanceKey, HashSet<String>> = DashMap::new();
+        let max_known_seqs: DashMap<String, u64> = DashMap::new();
         let mut total_events = 0usize;
         let mut total_balance = 0i64;
 
-        for (origin, events) in events_by_origin {
-            total_events += events.len();
-            for event in events.values() {
-                total_balance += event.amount;
-                let key = (event.bucket.clone(), event.account.clone());
-                let entry = accounts
-                    .entry(key)
-                    .or_insert_with(|| AccountState {
-                        balance: AtomicI64::new(0),
+        // Rebuild balance cache from storage
+        if let Ok(balances) = storage.aggregate_balances().await {
+            for (bucket, account, sum) in balances {
+                total_balance += sum;
+                let key = (bucket, account);
+                accounts.insert(
+                    key,
+                    AccountState {
+                        balance: AtomicI64::new(sum),
                         event_count: AtomicUsize::new(0),
-                    });
-                entry.balance.fetch_add(event.amount, Relaxed);
-                entry.event_count.fetch_add(1, Relaxed);
+                    },
+                );
             }
-            let mut state = OriginState {
-                events,
-                contiguous_head: 0,
-            };
-            state.recompute_head();
-            origins.insert(origin, state);
         }
 
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(persist_loop(storage, rx));
+        // Rebuild heads + max_known from storage
+        if let Ok(seqs_by_origin) = storage.sequences_by_origin().await {
+            for (origin, seqs) in &seqs_by_origin {
+                total_events += seqs.len();
+                let head = compute_contiguous_head(seqs);
+                heads.insert(origin.clone(), head);
+                if let Some(&max) = seqs.last() {
+                    max_known_seqs.insert(origin.clone(), max);
+                }
+            }
+        }
+
+        // Rebuild account→origins mapping
+        if let Ok(mapping) = storage.origin_account_mapping().await {
+            for (origin, bucket, account) in mapping {
+                account_origins
+                    .entry((bucket, account))
+                    .or_default()
+                    .insert(origin);
+            }
+        }
+
+        // Crash safety: derive next_seq from max origin_seq
+        let derived = storage.derive_next_seq(&node_id).await.unwrap_or(1);
+        let safe_next_seq = next_seq.max(derived);
 
         Self {
             node_id: Arc::from(node_id.as_str()),
             addr: Arc::from(addr.as_str()),
-            next_seq: Arc::new(AtomicU64::new(next_seq)),
+            next_seq: Arc::new(AtomicU64::new(safe_next_seq)),
             peers: Arc::new(Mutex::new(peers)),
-            origins: Arc::new(origins),
+            storage,
             accounts: Arc::new(accounts),
+            heads: Arc::new(heads),
+            account_origins: Arc::new(account_origins),
+            max_known_seqs: Arc::new(max_known_seqs),
             event_count: Arc::new(AtomicUsize::new(total_events)),
             total_balance: Arc::new(AtomicI64::new(total_balance)),
-            persist_tx: tx,
         }
     }
 
+    // ── Balance tracking ─────────────────────────────────────────────
+
     fn track_account(&self, event: &Event) {
         let key = (event.bucket.clone(), event.account.clone());
-        let entry = self
-            .accounts
-            .entry(key)
-            .or_insert_with(|| AccountState {
-                balance: AtomicI64::new(0),
-                event_count: AtomicUsize::new(0),
-            });
+        let entry = self.accounts.entry(key).or_insert_with(|| AccountState {
+            balance: AtomicI64::new(0),
+            event_count: AtomicUsize::new(0),
+        });
         entry.balance.fetch_add(event.amount, Relaxed);
         entry.event_count.fetch_add(1, Relaxed);
     }
 
-    /// Insert an event into the origin store. If `balance_pre_applied` is true,
-    /// skip balance tracking (used when `create_local_event` already atomically applied it).
-    fn insert_event_inner(&self, event: Event, balance_pre_applied: bool) -> bool {
-        let origin = event.origin_node_id.clone();
-        let seq = event.origin_seq;
-        let amount = event.amount;
-
-        let mut entry = self.origins.entry(origin).or_insert_with(|| OriginState {
-            events: BTreeMap::new(),
-            contiguous_head: 0,
-        });
-
-        if entry.events.contains_key(&seq) {
-            return false;
+    fn rollback_balance(&self, event: &Event) {
+        let key = (event.bucket.clone(), event.account.clone());
+        if let Some(entry) = self.accounts.get(&key) {
+            entry.balance.fetch_add(-event.amount, Relaxed);
+            entry.event_count.fetch_sub(1, Relaxed);
         }
-
-        entry.events.insert(seq, event.clone());
-        entry.recompute_head();
-        drop(entry);
-
-        if !balance_pre_applied {
-            self.track_account(&event);
-        }
-        self.event_count.fetch_add(1, Relaxed);
-        self.total_balance.fetch_add(amount, Relaxed);
-        let _ = self.persist_tx.send(PersistOp::AppendEvent(event));
-        true
     }
 
-    pub fn insert_event(&self, event: Event) -> bool {
-        self.insert_event_inner(event, false)
+    fn update_origin_tracking(&self, event: &Event) {
+        // Update account→origins mapping
+        self.account_origins
+            .entry((event.bucket.clone(), event.account.clone()))
+            .or_default()
+            .insert(event.origin_node_id.clone());
+
+        // Update max_known_seqs
+        self.max_known_seqs
+            .entry(event.origin_node_id.clone())
+            .and_modify(|max| {
+                if event.origin_seq > *max {
+                    *max = event.origin_seq;
+                }
+            })
+            .or_insert(event.origin_seq);
     }
 
-    pub fn insert_events_batch(&self, events: Vec<Event>) -> usize {
-        let mut by_origin: BTreeMap<String, Vec<Event>> = BTreeMap::new();
-        for event in events {
-            by_origin
-                .entry(event.origin_node_id.clone())
-                .or_default()
-                .push(event);
-        }
+    // ── Head advancement (DB-backed) ─────────────────────────────────
 
-        let mut inserted = 0usize;
-        let mut balance_delta = 0i64;
-        let mut to_persist = Vec::new();
+    async fn advance_head(&self, origin: &str, seq: u64) {
+        let current = self.heads.get(origin).map(|v| *v).unwrap_or(0);
 
-        for (origin, events) in by_origin {
-            let mut entry = self.origins.entry(origin).or_insert_with(|| OriginState {
-                events: BTreeMap::new(),
-                contiguous_head: 0,
-            });
-
-            for event in events {
-                if !entry.events.contains_key(&event.origin_seq) {
-                    balance_delta += event.amount;
-                    entry.events.insert(event.origin_seq, event.clone());
-                    self.track_account(&event);
-                    to_persist.push(event);
-                    inserted += 1;
+        if seq == current + 1 {
+            // Next expected — query storage for consecutive sequences beyond
+            let seqs = self
+                .storage
+                .sequences_from(origin, seq + 1)
+                .await
+                .unwrap_or_default();
+            let mut head = seq;
+            for s in seqs {
+                if s == head + 1 {
+                    head = s;
+                } else {
+                    break;
                 }
             }
-            entry.recompute_head();
+            self.heads.insert(origin.to_string(), head);
+        } else if seq > current + 1 {
+            // Gap — ensure entry exists but don't advance
+            self.heads.entry(origin.to_string()).or_insert(current);
         }
-
-        if inserted > 0 {
-            self.event_count.fetch_add(inserted, Relaxed);
-            self.total_balance.fetch_add(balance_delta, Relaxed);
-            for event in to_persist {
-                let _ = self.persist_tx.send(PersistOp::AppendEvent(event));
-            }
-        }
-        inserted
     }
 
-    /// Atomically debit an account, rejecting if the resulting balance would fall below `floor`.
-    /// Returns `Ok(new_balance)` on success, `Err((current_balance, projected_balance))` on rejection.
+    // ── Overdraft guard ──────────────────────────────────────────────
+
     fn try_debit_account(
         &self,
         bucket: &str,
@@ -208,11 +207,7 @@ impl SharedState {
 
         let result = entry.balance.fetch_update(Relaxed, Relaxed, |current| {
             let new = current + amount;
-            if new >= floor {
-                Some(new)
-            } else {
-                None
-            }
+            if new >= floor { Some(new) } else { None }
         });
 
         match result {
@@ -224,7 +219,44 @@ impl SharedState {
         }
     }
 
-    pub fn create_local_event(
+    // ── Event insertion ──────────────────────────────────────────────
+
+    /// Insert a replicated event. Returns true if newly inserted.
+    pub async fn insert_event(&self, event: Event) -> bool {
+        match self.storage.insert_event(&event).await {
+            Ok(InsertResult::Inserted) => {
+                self.track_account(&event);
+                self.event_count.fetch_add(1, Relaxed);
+                self.total_balance.fetch_add(event.amount, Relaxed);
+                self.update_origin_tracking(&event);
+                self.advance_head(&event.origin_node_id, event.origin_seq).await;
+                true
+            }
+            Ok(InsertResult::Duplicate) => false,
+            Ok(InsertResult::Conflict { details }) => {
+                tracing::warn!("conflict: {details}");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "insert_event failed");
+                false
+            }
+        }
+    }
+
+    /// Insert a batch of replicated events. Returns count of newly inserted.
+    pub async fn insert_events_batch(&self, events: Vec<Event>) -> usize {
+        let mut inserted = 0usize;
+        for event in events {
+            if self.insert_event(event).await {
+                inserted += 1;
+            }
+        }
+        inserted
+    }
+
+    /// Create a local event with overdraft guard.
+    pub async fn create_local_event(
         &self,
         bucket: String,
         account: String,
@@ -232,7 +264,7 @@ impl SharedState {
         note: Option<String>,
         max_overdraft: Option<u64>,
     ) -> Result<Event, (i64, i64)> {
-        // For debits, atomically check and apply the balance
+        // Pre-apply balance atomically (before any async work)
         let balance_pre_applied = if amount < 0 {
             let floor = match max_overdraft {
                 Some(v) => -(v.min(i64::MAX as u64) as i64),
@@ -256,27 +288,41 @@ impl SharedState {
             note,
         };
 
-        self.insert_event_inner(event.clone(), balance_pre_applied);
+        // Write to storage
+        match self.storage.insert_event(&event).await {
+            Ok(InsertResult::Inserted) => {
+                // Credit: track the balance now (debits were pre-applied)
+                if !balance_pre_applied {
+                    self.track_account(&event);
+                }
+                self.event_count.fetch_add(1, Relaxed);
+                self.total_balance.fetch_add(amount, Relaxed);
+                self.update_origin_tracking(&event);
+                self.advance_head(&event.origin_node_id, event.origin_seq).await;
 
-        let _ = self.persist_tx.send(PersistOp::SaveMeta(NodeMeta {
-            node_id: self.node_id.to_string(),
-            host: self
-                .addr
-                .split(':')
-                .next()
-                .unwrap_or("127.0.0.1")
-                .to_string(),
-            port: self
-                .addr
-                .split(':')
-                .nth(1)
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(0),
-            next_seq: seq + 1,
-        }));
+                // Persist next_seq
+                let _ = self.storage.save_node_meta(&NodeMeta {
+                    node_id: self.node_id.to_string(),
+                    host: self.addr.split(':').next().unwrap_or("127.0.0.1").to_string(),
+                    port: self.addr.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(0),
+                    next_seq: seq + 1,
+                }).await;
 
-        Ok(event)
+                Ok(event)
+            }
+            _ => {
+                // DB write failed — rollback pre-applied balance
+                if balance_pre_applied {
+                    self.rollback_balance(&event);
+                }
+                // This shouldn't happen for local events (unique event_id), but handle it
+                tracing::error!("failed to persist local event {}", event.event_id);
+                Err((0, 0))
+            }
+        }
     }
+
+    // ── Reads (in-memory caches) ─────────────────────────────────────
 
     pub fn event_count(&self) -> usize {
         self.event_count.load(Relaxed)
@@ -286,7 +332,6 @@ impl SharedState {
         self.total_balance.load(Relaxed)
     }
 
-    /// Get balance for a specific (bucket, account).
     pub fn account_balance(&self, bucket: &str, account: &str) -> i64 {
         self.accounts
             .get(&(bucket.to_string(), account.to_string()))
@@ -294,7 +339,6 @@ impl SharedState {
             .unwrap_or(0)
     }
 
-    /// Get all account balances.
     pub fn all_balances(&self) -> Vec<AccountBalance> {
         let mut balances: Vec<AccountBalance> = self
             .accounts
@@ -314,103 +358,112 @@ impl SharedState {
     }
 
     pub fn get_heads(&self) -> BTreeMap<String, u64> {
-        self.origins
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.contiguous_head))
-            .collect()
+        self.heads.iter().map(|e| (e.key().clone(), *e.value())).collect()
     }
 
-    pub fn get_events_range(&self, origin: &str, from_seq: u64, to_seq: u64) -> Vec<Event> {
-        let Some(entry) = self.origins.get(origin) else {
-            return vec![];
-        };
-        entry
-            .events
-            .range(from_seq..=to_seq)
-            .map(|(_, e)| e.clone())
-            .collect()
+    // ── Reads (storage-backed, on-demand) ────────────────────────────
+
+    pub async fn get_events_range(&self, origin: &str, from_seq: u64, to_seq: u64) -> Vec<Event> {
+        self.storage.query_events_range(origin, from_seq, to_seq).await.unwrap_or_default()
     }
 
-    pub fn checksum(&self) -> String {
-        let mut all: Vec<(String, Vec<(u64, Event)>)> = self
-            .origins
-            .iter()
-            .map(|entry| {
-                let origin = entry.key().clone();
-                let events: Vec<(u64, Event)> = entry
-                    .events
-                    .iter()
-                    .map(|(seq, e)| (*seq, e.clone()))
-                    .collect();
-                (origin, events)
-            })
-            .collect();
-        all.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut hasher = Sha256::new();
-        for (origin, events) in &all {
-            for (seq, event) in events {
-                hasher.update(format!(
-                    "{}:{}:{}:{}:{}:{}:{}\n",
-                    origin,
-                    seq,
-                    event.event_id,
-                    event.bucket,
-                    event.account,
-                    event.amount,
-                    event.note.as_deref().unwrap_or("")
-                ));
-            }
-        }
-        format!("{:x}", hasher.finalize())
+    pub async fn all_events_sorted(&self) -> Vec<Event> {
+        self.storage.query_all_events_sorted().await.unwrap_or_default()
     }
 
-    pub fn all_events_sorted(&self) -> Vec<Event> {
-        let mut events: Vec<Event> = self
-            .origins
-            .iter()
-            .flat_map(|entry| entry.events.values().cloned().collect::<Vec<_>>())
-            .collect();
-        events.sort_by(|a, b| {
-            a.created_at_unix_ms
-                .cmp(&b.created_at_unix_ms)
-                .then_with(|| a.origin_node_id.cmp(&b.origin_node_id))
-                .then_with(|| a.origin_seq.cmp(&b.origin_seq))
-        });
-        events
+    pub async fn checksum(&self) -> String {
+        self.storage.checksum_data().await.unwrap_or_default()
     }
 
     pub async fn persist_peers(&self) {
-        let pf = {
-            let peers = self.peers.lock().await;
-            PeersFile {
-                peers: peers.to_vec(),
+        let addrs = self.peers.lock().await.to_vec();
+        for addr in &addrs {
+            let _ = self.storage.save_peer(addr).await;
+        }
+    }
+
+    // ── Collapsed state ──────────────────────────────────────────────
+
+    pub fn collapsed_state(&self) -> CollapsedState {
+        let mut result = BTreeMap::new();
+
+        for entry in self.accounts.iter() {
+            let (bucket, account) = entry.key();
+            let balance = entry.balance.load(Relaxed);
+            let key = format!("{bucket}:{account}");
+
+            let mut origins = BTreeMap::new();
+            if let Some(origin_set) = self.account_origins.get(&(bucket.clone(), account.clone())) {
+                for origin_id in origin_set.iter() {
+                    let head = self.heads.get(origin_id).map(|v| *v).unwrap_or(0);
+                    let max_known = self.max_known_seqs.get(origin_id).map(|v| *v).unwrap_or(0);
+                    origins.insert(origin_id.clone(), OriginProgress { head, max_known });
+                }
             }
+
+            let status = if origins.is_empty()
+                || origins.values().all(|o| o.head >= o.max_known)
+            {
+                "locally_confirmed".to_string()
+            } else {
+                "provisional".to_string()
+            };
+
+            result.insert(key, CollapsedBalance {
+                balance,
+                status,
+                contributing_origins: origins,
+            });
+        }
+        result
+    }
+
+    pub fn collapsed_balance(&self, bucket: &str, account: &str) -> CollapsedBalance {
+        let balance = self.account_balance(bucket, account);
+        let key = (bucket.to_string(), account.to_string());
+
+        let mut origins = BTreeMap::new();
+        if let Some(origin_set) = self.account_origins.get(&key) {
+            for origin_id in origin_set.iter() {
+                let head = self.heads.get(origin_id).map(|v| *v).unwrap_or(0);
+                let max_known = self.max_known_seqs.get(origin_id).map(|v| *v).unwrap_or(0);
+                origins.insert(origin_id.clone(), OriginProgress { head, max_known });
+            }
+        }
+
+        let status = if origins.is_empty()
+            || origins.values().all(|o| o.head >= o.max_known)
+        {
+            "locally_confirmed".to_string()
+        } else {
+            "provisional".to_string()
         };
-        let _ = self.persist_tx.send(PersistOp::SavePeers(pf));
+
+        CollapsedBalance { balance, status, contributing_origins: origins }
+    }
+
+    // ── Debug ────────────────────────────────────────────────────────
+
+    pub async fn debug_origin(&self, origin_id: &str) -> (u64, Vec<u64>, Option<u64>, Option<u64>, usize) {
+        let head = self.heads.get(origin_id).map(|v| *v).unwrap_or(0);
+        let seqs = self.storage.sequences_from(origin_id, 1).await.unwrap_or_default();
+        let min = seqs.first().copied();
+        let max = seqs.last().copied();
+        let count = seqs.len();
+        (head, seqs, min, max, count)
     }
 }
 
-async fn persist_loop<S: StorageBackend>(storage: S, mut rx: mpsc::UnboundedReceiver<PersistOp>) {
-    while let Some(op) = rx.recv().await {
-        match op {
-            PersistOp::AppendEvent(event) => {
-                if let Err(e) = storage.append_event(&event).await {
-                    tracing::warn!(error = %e, "failed to persist event");
-                }
-            }
-            PersistOp::SaveMeta(meta) => {
-                if let Err(e) = storage.save_node_meta(&meta).await {
-                    tracing::warn!(error = %e, "failed to persist node meta");
-                }
-            }
-            PersistOp::SavePeers(pf) => {
-                if let Err(e) = storage.save_peers(&pf).await {
-                    tracing::warn!(error = %e, "failed to persist peers");
-                }
-            }
+fn compute_contiguous_head(seqs: &[u64]) -> u64 {
+    let mut head = 0u64;
+    for &seq in seqs {
+        if seq == head + 1 {
+            head = seq;
+        } else if seq > head + 1 {
+            break;
         }
     }
+    head
 }
 
 fn now_ms() -> u64 {

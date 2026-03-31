@@ -1,4 +1,67 @@
+# Multi-node deployment with per-node PostgreSQL.
+# Each node has its own database — events sync via HTTP between nodes.
+#
+# Usage:
+#   docker compose up --build
+#   curl http://localhost:3001/health
+#   curl -X POST http://localhost:3001/events \
+#     -H 'Content-Type: application/json' \
+#     -d '{"bucket":"default","account":"alice","amount":100}'
+#   curl http://localhost:3002/state   # should see the event after sync
+
 services:
+  # ── Postgres instances (one per node) ───────────────────────────────
+
+  db1:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shardd
+      POSTGRES_USER: shardd
+      POSTGRES_PASSWORD: shardd
+    volumes:
+      - db1_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shardd"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shardd
+
+  db2:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shardd
+      POSTGRES_USER: shardd
+      POSTGRES_PASSWORD: shardd
+    volumes:
+      - db2_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shardd"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shardd
+
+  db3:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shardd
+      POSTGRES_USER: shardd
+      POSTGRES_PASSWORD: shardd
+    volumes:
+      - db3_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shardd"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shardd
+
+  # ── Shardd nodes ────────────────────────────────────────────────────
+
   node1:
     build:
       context: .
@@ -6,15 +69,17 @@ services:
     container_name: shardd-node1
     ports:
       - "3001:3001"
+    environment:
+      DATABASE_URL: postgres://shardd:shardd@db1/shardd
     command:
       - --host=0.0.0.0
       - --port=3001
       - --advertise-addr=node1:3001
-      - --config-dir=/data
       - --bootstrap=node2:3002
       - --bootstrap=node3:3003
-    volumes:
-      - node1_data:/data
+    depends_on:
+      db1:
+        condition: service_healthy
     networks:
       - shardd
 
@@ -25,15 +90,17 @@ services:
     container_name: shardd-node2
     ports:
       - "3002:3002"
+    environment:
+      DATABASE_URL: postgres://shardd:shardd@db2/shardd
     command:
       - --host=0.0.0.0
       - --port=3002
       - --advertise-addr=node2:3002
-      - --config-dir=/data
       - --bootstrap=node1:3001
       - --bootstrap=node3:3003
-    volumes:
-      - node2_data:/data
+    depends_on:
+      db2:
+        condition: service_healthy
     networks:
       - shardd
 
@@ -44,15 +111,17 @@ services:
     container_name: shardd-node3
     ports:
       - "3003:3003"
+    environment:
+      DATABASE_URL: postgres://shardd:shardd@db3/shardd
     command:
       - --host=0.0.0.0
       - --port=3003
       - --advertise-addr=node3:3003
-      - --config-dir=/data
       - --bootstrap=node1:3001
       - --bootstrap=node2:3002
-    volumes:
-      - node3_data:/data
+    depends_on:
+      db3:
+        condition: service_healthy
     networks:
       - shardd
 
@@ -67,9 +136,9 @@ services:
       - shardd
 
 volumes:
-  node1_data:
-  node2_data:
-  node3_data:
+  db1_data:
+  db2_data:
+  db3_data:
 
 networks:
   shardd:

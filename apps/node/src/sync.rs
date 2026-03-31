@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use shardd_storage::StorageBackend;
 use shardd_types::Event;
 
 use crate::state::SharedState;
 
 /// Background sync loop: periodically pull missing events from random peers.
-pub async fn sync_loop(state: SharedState, interval_ms: u64, fanout: usize) {
+pub async fn sync_loop<S: StorageBackend>(state: SharedState<S>, interval_ms: u64, fanout: usize) {
     let interval = Duration::from_millis(interval_ms);
     loop {
         tokio::time::sleep(interval).await;
@@ -17,25 +18,13 @@ pub async fn sync_loop(state: SharedState, interval_ms: u64, fanout: usize) {
         }
         debug!(peer_count = peers.len(), "sync round starting");
 
-        // Sync with all selected peers in parallel
-        let mut handles = Vec::new();
-        for peer in peers {
-            let state = state.clone();
-            handles.push(tokio::spawn(async move {
-                match sync_with_peer(&state, &peer).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        warn!(peer, error = %e, "sync failed");
-                        0
-                    }
-                }
-            }));
-        }
-
         let mut total_applied = 0usize;
-        for handle in handles {
-            if let Ok(n) = handle.await {
-                total_applied += n;
+        // Sync sequentially to avoid cloning Arc<S> into spawned tasks
+        // (StorageBackend is not necessarily Clone)
+        for peer in &peers {
+            match sync_with_peer(&state, peer).await {
+                Ok(n) => total_applied += n,
+                Err(e) => warn!(peer, error = %e, "sync failed"),
             }
         }
 
@@ -48,7 +37,10 @@ pub async fn sync_loop(state: SharedState, interval_ms: u64, fanout: usize) {
 }
 
 /// Pull missing events from a single peer.
-async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize> {
+async fn sync_with_peer<S: StorageBackend>(
+    state: &SharedState<S>,
+    peer: &str,
+) -> anyhow::Result<usize> {
     let client = reqwest::Client::new();
     let base = format!("http://{peer}");
 
@@ -77,10 +69,8 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
         }
     }
 
-    // Snapshot local heads (lock-free DashMap iteration)
     let local_heads = state.get_heads();
 
-    // Fetch all missing ranges (no locks held during HTTP)
     let mut all_events = Vec::new();
     for (origin, &peer_head) in &peer_heads {
         let my_head = local_heads.get(origin).copied().unwrap_or(0);
@@ -108,12 +98,12 @@ async fn sync_with_peer(state: &SharedState, peer: &str) -> anyhow::Result<usize
     if all_events.is_empty() {
         return Ok(0);
     }
-    let applied = state.insert_events_batch(all_events);
+    let applied = state.insert_events_batch(all_events).await;
     Ok(applied)
 }
 
 /// Eagerly push a single event to random peers.
-pub async fn eager_push(state: &SharedState, event: &Event) {
+pub async fn eager_push<S: StorageBackend>(state: &SharedState<S>, event: &Event) {
     let peers = {
         let p = state.peers.lock().await;
         let fanout = (p.len() / 2).max(3).min(10);

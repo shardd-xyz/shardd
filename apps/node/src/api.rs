@@ -2,17 +2,20 @@ use axum::extract::{Path, State};
 use axum::Json;
 use tracing::{debug, info};
 
+use shardd_storage::StorageBackend;
 use shardd_types::*;
 
 use crate::error::AppError;
-use crate::state::SharedState;
+use crate::state::{CollapsedState, SharedState};
 use crate::sync;
 
 type Result<T> = std::result::Result<T, AppError>;
 
 // ── GET /health ──
 
-pub async fn health(State(state): State<SharedState>) -> Result<Json<HealthResponse>> {
+pub async fn health<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<HealthResponse>> {
     let peer_count = state.peers.lock().await.len();
     Ok(Json(HealthResponse {
         node_id: state.node_id.to_string(),
@@ -25,7 +28,9 @@ pub async fn health(State(state): State<SharedState>) -> Result<Json<HealthRespo
 
 // ── GET /state ──
 
-pub async fn get_state(State(state): State<SharedState>) -> Result<Json<StateResponse>> {
+pub async fn get_state<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<StateResponse>> {
     let peers = state.peers.lock().await.to_vec();
     Ok(Json(StateResponse {
         node_id: state.node_id.to_string(),
@@ -35,21 +40,23 @@ pub async fn get_state(State(state): State<SharedState>) -> Result<Json<StateRes
         event_count: state.event_count(),
         total_balance: state.total_balance(),
         contiguous_heads: state.get_heads(),
-        checksum: state.checksum(),
+        checksum: state.checksum().await,
     }))
 }
 
 // ── GET /peers ──
 
-pub async fn get_peers(State(state): State<SharedState>) -> Result<Json<Vec<String>>> {
+pub async fn get_peers<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<Vec<String>>> {
     let peers = state.peers.lock().await;
     Ok(Json(peers.to_vec()))
 }
 
 // ── POST /peers/add ──
 
-pub async fn add_peer(
-    State(state): State<SharedState>,
+pub async fn add_peer<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Json(req): Json<AddPeerRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let added = state.peers.lock().await.add(&req.addr);
@@ -62,8 +69,8 @@ pub async fn add_peer(
 
 // ── POST /join ──
 
-pub async fn join(
-    State(state): State<SharedState>,
+pub async fn join<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Json(req): Json<JoinRequest>,
 ) -> Result<Json<JoinResponse>> {
     let (added, peers) = {
@@ -85,13 +92,14 @@ pub async fn join(
 
 // ── POST /events ──
 
-pub async fn create_event(
-    State(state): State<SharedState>,
+pub async fn create_event<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<CreateEventResponse>> {
     let max_overdraft = req.max_overdraft;
     let event = state
         .create_local_event(req.bucket, req.account, req.amount, req.note, max_overdraft)
+        .await
         .map_err(|(balance, projected)| {
             let limit = -(max_overdraft.unwrap_or(0) as i64);
             AppError::InsufficientFunds {
@@ -122,11 +130,11 @@ pub async fn create_event(
 
 // ── POST /events/replicate ──
 
-pub async fn replicate_event(
-    State(state): State<SharedState>,
+pub async fn replicate_event<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Json(event): Json<Event>,
 ) -> Result<Json<ReplicateResponse>> {
-    let inserted = state.insert_event(event.clone());
+    let inserted = state.insert_event(event.clone()).await;
     if inserted {
         debug!(
             event_id = %event.event_id,
@@ -144,32 +152,36 @@ pub async fn replicate_event(
 
 // ── GET /events ──
 
-pub async fn list_events(State(state): State<SharedState>) -> Result<Json<Vec<Event>>> {
-    Ok(Json(state.all_events_sorted()))
+pub async fn list_events<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<Vec<Event>>> {
+    Ok(Json(state.all_events_sorted().await))
 }
 
 // ── GET /heads ──
 
-pub async fn get_heads(
-    State(state): State<SharedState>,
+pub async fn get_heads<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
 ) -> Result<Json<std::collections::BTreeMap<String, u64>>> {
     Ok(Json(state.get_heads()))
 }
 
 // ── POST /events/range ──
 
-pub async fn events_range(
-    State(state): State<SharedState>,
+pub async fn events_range<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Json(req): Json<RangeRequest>,
 ) -> Result<Json<Vec<Event>>> {
     Ok(Json(
-        state.get_events_range(&req.origin_node_id, req.from_seq, req.to_seq),
+        state.get_events_range(&req.origin_node_id, req.from_seq, req.to_seq).await,
     ))
 }
 
 // ── GET /balances ──
 
-pub async fn get_balances(State(state): State<SharedState>) -> Result<Json<BalancesResponse>> {
+pub async fn get_balances<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<BalancesResponse>> {
     let accounts = state.all_balances();
     let total_balance = state.total_balance();
     Ok(Json(BalancesResponse {
@@ -180,8 +192,8 @@ pub async fn get_balances(State(state): State<SharedState>) -> Result<Json<Balan
 
 // ── POST /sync ──
 
-pub async fn trigger_sync(
-    State(state): State<SharedState>,
+pub async fn trigger_sync<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
 ) -> Result<Json<SyncTriggerResponse>> {
     let peers = state.peers.lock().await.to_vec();
     let client = reqwest::Client::new();
@@ -228,7 +240,7 @@ pub async fn trigger_sync(
             };
             all_events.extend(events);
         }
-        applied += state.insert_events_batch(all_events);
+        applied += state.insert_events_batch(all_events).await;
     }
 
     info!(peers_contacted = contacted, events_applied = applied, "manual sync complete");
@@ -241,19 +253,12 @@ pub async fn trigger_sync(
 
 // ── GET /debug/origin/:origin_node_id ──
 
-pub async fn debug_origin(
-    State(state): State<SharedState>,
+pub async fn debug_origin<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
     Path(origin_node_id): Path<String>,
 ) -> Result<Json<DebugOriginResponse>> {
     let (head, present_seqs, min_seq, max_seq, count) =
-        if let Some(entry) = state.origins.get(&origin_node_id) {
-            let keys: Vec<u64> = entry.events.keys().copied().collect();
-            let min = keys.first().copied();
-            let max = keys.last().copied();
-            (entry.contiguous_head, keys.clone(), min, max, keys.len())
-        } else {
-            (0, vec![], None, None, 0)
-        };
+        state.debug_origin(&origin_node_id).await;
     Ok(Json(DebugOriginResponse {
         origin_node_id,
         contiguous_head: head,
@@ -262,4 +267,21 @@ pub async fn debug_origin(
         max_seq,
         count,
     }))
+}
+
+// ── GET /collapsed ──
+
+pub async fn get_collapsed<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+) -> Result<Json<CollapsedState>> {
+    Ok(Json(state.collapsed_state()))
+}
+
+// ── GET /collapsed/:bucket/:account ──
+
+pub async fn get_collapsed_account<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+    Path((bucket, account)): Path<(String, String)>,
+) -> Result<Json<crate::state::CollapsedBalance>> {
+    Ok(Json(state.collapsed_balance(&bucket, &account)))
 }

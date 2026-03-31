@@ -30,10 +30,15 @@ This builds the Docker image locally, transfers it to the remote host, and start
 ### Architecture
 
 ```
-Internet → Caddy (:80/:443) → node1:3001
-                              → node2:3002
-                              → node3:3003
+Internet → Caddy (:80/:443) → node1:3001 → db1 (Postgres)
+                              → node2:3002 → db2 (Postgres)
+                              → node3:3003 → db3 (Postgres)
 ```
+
+Each node has its own dedicated PostgreSQL instance for event storage (configured
+via `DATABASE_URL`). Only balances and per-origin heads are kept in memory; events
+are queried from Postgres on demand. Nodes sync with each other over HTTP — the
+sync protocol is unchanged.
 
 Caddy load-balances across all nodes with health checks on `/health`. All nodes are interchangeable for reads; writes go to whichever node receives them and replicate via the sync protocol.
 

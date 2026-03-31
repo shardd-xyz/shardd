@@ -3,8 +3,9 @@
 Multi-writer replicated append-only event system.
 
 Each node owns a local append-only sublog with gapless sequence numbers.
-Replication is eventual — nodes sync by exchanging per-origin contiguous heads
-and fetching missing suffix ranges over HTTP+JSON.
+Events are stored in a per-node PostgreSQL database; only balances and heads
+are kept in memory. Replication is eventual — nodes sync by exchanging
+per-origin contiguous heads and fetching missing suffix ranges over HTTP+JSON.
 
 ## Project structure
 
@@ -15,9 +16,19 @@ apps/
   dashboard/  shardd-dashboard — web dashboard (Dioxus)
 libs/
   types/      shardd-types     — shared data types
-  storage/    shardd-storage   — file-based persistence layer
+  storage/    shardd-storage   — Postgres-backed persistence layer
+              storage/postgres.rs      — PostgresStorage (production)
+              storage/memory.rs        — InMemoryStorage (tests)
+              storage/migrations/      — SQL migrations
 infra/        production deployment (compose, caddy, deploy scripts)
 ```
+
+## Prerequisites
+
+- Rust toolchain (stable)
+- PostgreSQL (local instance or Docker)
+- `DATABASE_URL` environment variable pointing to a Postgres database,
+  e.g. `postgres://shardd:shardd@localhost/shardd`
 
 ## Quick start
 
@@ -25,13 +36,18 @@ infra/        production deployment (compose, caddy, deploy scripts)
 # Build everything
 cargo build --workspace --release
 
-# Run a 3-node local cluster
+# Start a local Postgres (if you don't already have one running)
+docker run -d --name shardd-pg -p 5432:5432 \
+  -e POSTGRES_DB=shardd -e POSTGRES_USER=shardd -e POSTGRES_PASSWORD=shardd \
+  postgres:17-alpine
+
+# Run a 3-node local cluster (each node gets its own database)
 ./run cluster
 
 # Or run nodes individually:
-./run node 3001
-./run node 3002 --bootstrap 127.0.0.1:3001
-./run node 3003 --bootstrap 127.0.0.1:3001
+DATABASE_URL=postgres://shardd:shardd@localhost/shardd_a ./run node 3001
+DATABASE_URL=postgres://shardd:shardd@localhost/shardd_b ./run node 3002 --bootstrap 127.0.0.1:3001
+DATABASE_URL=postgres://shardd:shardd@localhost/shardd_c ./run node 3003 --bootstrap 127.0.0.1:3001
 ```
 
 ## Using the CLI
@@ -67,6 +83,12 @@ curl -s -X POST localhost:3001/events \
 curl -s localhost:3001/state | jq '{event_count, balance, checksum}'
 curl -s localhost:3002/state | jq '{event_count, balance, checksum}'
 curl -s localhost:3003/state | jq '{event_count, balance, checksum}'
+
+# Collapsed balances (all buckets/accounts)
+curl -s localhost:3001/collapsed | jq .
+
+# Collapsed balance for a specific bucket/account
+curl -s localhost:3001/collapsed/default/alice | jq .
 ```
 
 ## Dashboard
@@ -83,11 +105,13 @@ cargo install dioxus-cli
 
 ## Docker
 
+Each node runs alongside its own Postgres container (see `docker-compose.yml`).
+
 ```bash
 # Build image
 ./run build
 
-# Run 3-node cluster in Docker
+# Run 3-node cluster in Docker (provisions per-node Postgres automatically)
 ./run infra
 
 # Tail logs
@@ -128,21 +152,23 @@ cargo install dioxus-cli
 | `--host` | `127.0.0.1` | Listen host |
 | `--port` | (required) | Listen port |
 | `--advertise-addr` | `host:port` | Address advertised to peers |
-| `--config-dir` | (required) | Data directory |
+| `--database-url` | `DATABASE_URL` env | Postgres connection string |
 | `--bootstrap` | (none) | Bootstrap peer(s), repeatable |
 | `--fanout` | `3` | Peers per sync round |
 | `--sync-interval-ms` | `3000` | Sync interval |
 | `--max-peers` | `16` | Max tracked peers |
 
-## Storage layout
+The `--database-url` flag (or `DATABASE_URL` environment variable) replaces the
+old `--config-dir` flag. Each node must point to its own Postgres database.
 
-```
-<config-dir>/
-  node.json          # node_id, host, port, next_seq
-  peers.json         # known peers
-  events/
-    <origin-id>.jsonl # one JSON event per line
-```
+## Storage
+
+Events are persisted in a per-node PostgreSQL database. Only aggregated balances
+and per-origin heads are held in memory (`SharedState<S>` is generic over
+`StorageBackend`). The SQL schema is applied automatically on startup from
+`libs/storage/migrations/001_create_ledger_tables.sql`.
+
+Checksum format: `origin:seq:event_id:bucket:account:amount` lines joined by `\n`.
 
 ## Production deployment
 

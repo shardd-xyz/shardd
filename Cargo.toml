@@ -30,7 +30,7 @@ axum = "0.7"
 reqwest = { version = "0.12", features = ["json"] }
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Crypto
 sha2 = "0.10"
@@ -42,6 +42,9 @@ anyhow = "1"
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "migrate"] }
 
 # Other
 uuid = { version = "1", features = ["v4"] }

@@ -8,3 +8,6 @@ shardd-types = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+sqlx = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }

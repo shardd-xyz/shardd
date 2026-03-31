@@ -21,23 +21,22 @@ cmd_infra_logs() {
 
 cmd_node() {
     local port="${1:-3001}"
-    local config_dir="./demo/node-${port}"
     shift || true
-    echo "Starting node on port ${port} (config: ${config_dir})..."
-    cargo run -p shardd-node -- --port "$port" --config-dir "$config_dir" "$@"
+    local db_url="${DATABASE_URL:-postgres://shardd:shardd@localhost/shardd_${port}}"
+    echo "Starting node on port ${port} (db: ${db_url})..."
+    cargo run -p shardd-node -- --port "$port" --database-url "$db_url" "$@"
 }
 
 cmd_cluster() {
     local host="${SHARDD_HOST:-127.0.0.1}"
+    local db_base="${SHARDD_DB_BASE:-postgres://shardd:shardd@localhost/shardd}"
     echo "Building release..."
     cargo build --release
     echo "Starting 3-node cluster (host=${host})..."
-    rm -rf ./demo
-    mkdir -p ./demo/{a,b,c}
-    ./target/release/shardd-node --host 0.0.0.0 --port 3001 --advertise-addr "${host}:3001" --config-dir ./demo/a &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3001 --advertise-addr "${host}:3001" --database-url "${db_base}_a" &
     sleep 1
-    ./target/release/shardd-node --host 0.0.0.0 --port 3002 --advertise-addr "${host}:3002" --config-dir ./demo/b --bootstrap "${host}:3001" &
-    ./target/release/shardd-node --host 0.0.0.0 --port 3003 --advertise-addr "${host}:3003" --config-dir ./demo/c --bootstrap "${host}:3001" &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3002 --advertise-addr "${host}:3002" --database-url "${db_base}_b" --bootstrap "${host}:3001" &
+    ./target/release/shardd-node --host 0.0.0.0 --port 3003 --advertise-addr "${host}:3003" --database-url "${db_base}_c" --bootstrap "${host}:3001" &
     echo "Cluster running on ports 3001-3003. Press Ctrl+C to stop."
     wait
 }
