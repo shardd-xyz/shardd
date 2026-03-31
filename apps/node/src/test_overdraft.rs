@@ -320,3 +320,201 @@ async fn exact_balance_debit_succeeds() {
     assert!(result.is_ok());
     assert_eq!(node.account_balance("default", "main"), 0);
 }
+
+// ── Deduplication tests (parity with elixir_ledger) ──────────────────
+
+#[tokio::test]
+async fn deduplicates_by_origin_and_seq() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    let event = shardd_types::Event {
+        event_id: "dup-1".into(),
+        origin_node_id: "remote".into(),
+        origin_seq: 1,
+        created_at_unix_ms: 1000,
+        bucket: "default".into(),
+        account: "alice".into(),
+        amount: 100,
+        note: None,
+    };
+    assert!(node.insert_event(event.clone()).await);
+    assert!(!node.insert_event(event).await); // duplicate
+    assert_eq!(node.account_balance("default", "alice"), 100); // not 200
+}
+
+#[tokio::test]
+async fn batch_insert_deduplicates() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    let events: Vec<shardd_types::Event> = (1..=5)
+        .map(|i| shardd_types::Event {
+            event_id: format!("batch-{i}"),
+            origin_node_id: "remote".into(),
+            origin_seq: i,
+            created_at_unix_ms: 1000 + i as u64,
+            bucket: "default".into(),
+            account: "alice".into(),
+            amount: 10,
+            note: None,
+        })
+        .collect();
+    assert_eq!(node.insert_events_batch(events.clone()).await, 5);
+    assert_eq!(node.insert_events_batch(events).await, 0); // all duplicates
+}
+
+// ── Head tracking tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn tracks_contiguous_head_per_origin() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    for i in 1..=3 {
+        let event = shardd_types::Event {
+            event_id: format!("h-{i}"),
+            origin_node_id: "origin-a".into(),
+            origin_seq: i,
+            created_at_unix_ms: i as u64 * 1000,
+            bucket: "b".into(),
+            account: "a".into(),
+            amount: 1,
+            note: None,
+        };
+        node.insert_event(event).await;
+    }
+    assert_eq!(*node.get_heads().get("origin-a").unwrap(), 3);
+}
+
+#[tokio::test]
+async fn head_stops_at_gap_and_advances_on_fill() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    // Insert seq 1 and 3, skip 2
+    for i in [1, 3] {
+        let event = shardd_types::Event {
+            event_id: format!("gap-{i}"),
+            origin_node_id: "origin-b".into(),
+            origin_seq: i,
+            created_at_unix_ms: i as u64 * 1000,
+            bucket: "b".into(),
+            account: "a".into(),
+            amount: 1,
+            note: None,
+        };
+        node.insert_event(event).await;
+    }
+    assert_eq!(*node.get_heads().get("origin-b").unwrap(), 1);
+
+    // Fill the gap
+    let event2 = shardd_types::Event {
+        event_id: "gap-2".into(),
+        origin_node_id: "origin-b".into(),
+        origin_seq: 2,
+        created_at_unix_ms: 2000,
+        bucket: "b".into(),
+        account: "a".into(),
+        amount: 1,
+        note: None,
+    };
+    node.insert_event(event2).await;
+    assert_eq!(*node.get_heads().get("origin-b").unwrap(), 3);
+}
+
+// ── State read tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn get_events_returns_sorted_by_time() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("b".into(), "a".into(), 10, None, None).await.unwrap();
+    node.create_local_event("b".into(), "a".into(), 20, None, None).await.unwrap();
+
+    let events = node.all_events_sorted().await;
+    assert_eq!(events.len(), 2);
+    assert!(events[0].created_at_unix_ms <= events[1].created_at_unix_ms);
+}
+
+#[tokio::test]
+async fn get_events_range_returns_correct_range() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("b".into(), "a".into(), 1, None, None).await.unwrap();
+    node.create_local_event("b".into(), "a".into(), 2, None, None).await.unwrap();
+    node.create_local_event("b".into(), "a".into(), 3, None, None).await.unwrap();
+
+    let events = node.get_events_range("node-0", 2, 3).await;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].origin_seq, 2);
+    assert_eq!(events[1].origin_seq, 3);
+}
+
+#[tokio::test]
+async fn all_balances_returns_all_accounts() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("bucket1".into(), "alice".into(), 100, None, None).await.unwrap();
+    node.create_local_event("bucket1".into(), "bob".into(), 50, None, None).await.unwrap();
+
+    let balances = node.all_balances();
+    assert_eq!(balances.len(), 2);
+    assert!(balances.iter().any(|b| b.bucket == "bucket1" && b.account == "alice" && b.balance == 100));
+    assert!(balances.iter().any(|b| b.bucket == "bucket1" && b.account == "bob" && b.balance == 50));
+}
+
+#[tokio::test]
+async fn event_count_tracks_total() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    assert_eq!(node.event_count(), 0);
+    node.create_local_event("b".into(), "a".into(), 1, None, None).await.unwrap();
+    assert_eq!(node.event_count(), 1);
+}
+
+#[tokio::test]
+async fn checksum_is_deterministic() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("b".into(), "a".into(), 100, None, None).await.unwrap();
+    let c1 = node.checksum().await;
+    let c2 = node.checksum().await;
+    assert_eq!(c1, c2);
+    assert_eq!(c1.len(), 64); // SHA-256 hex
+}
+
+// ── Collapsed state tests ────────────────────────────────────────────
+
+#[tokio::test]
+async fn collapsed_locally_confirmed_when_no_gaps() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("default".into(), "alice".into(), 100, None, None).await.unwrap();
+    node.create_local_event("default".into(), "alice".into(), 50, None, None).await.unwrap();
+
+    let collapsed = node.collapsed_state();
+    let entry = collapsed.get("default:alice").unwrap();
+    assert_eq!(entry.status, "locally_confirmed");
+    assert_eq!(entry.balance, 150);
+}
+
+#[tokio::test]
+async fn collapsed_provisional_when_gaps_exist() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    // Insert remote events with gap (seq 1 and 3, missing 2)
+    for i in [1u64, 3] {
+        let event = shardd_types::Event {
+            event_id: format!("prov-{i}"),
+            origin_node_id: "remote-gapped".into(),
+            origin_seq: i,
+            created_at_unix_ms: i * 1000,
+            bucket: "default".into(),
+            account: "bob".into(),
+            amount: 10,
+            note: None,
+        };
+        node.insert_event(event).await;
+    }
+
+    let collapsed = node.collapsed_state();
+    let entry = collapsed.get("default:bob").unwrap();
+    assert_eq!(entry.status, "provisional");
+    assert_eq!(entry.balance, 20);
+}
+
+#[tokio::test]
+async fn collapsed_single_account() {
+    let node = make_node("node-0", "127.0.0.1:9000", 4).await;
+    node.create_local_event("default".into(), "alice".into(), 100, None, None).await.unwrap();
+
+    let entry = node.collapsed_balance("default", "alice");
+    assert_eq!(entry.balance, 100);
+    assert_eq!(entry.status, "locally_confirmed");
+}
