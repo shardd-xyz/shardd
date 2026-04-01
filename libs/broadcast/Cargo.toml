@@ -1,0 +1,18 @@
+[package]
+name = "shardd-broadcast"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+shardd-types = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+foca = "0.17"
+bincode = "1"
+rand = { workspace = true }
+anyhow = { workspace = true }

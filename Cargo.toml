@@ -7,6 +7,7 @@ members = [
     "apps/bench",
     "libs/types",
     "libs/storage",
+    "libs/broadcast",
 ]
 
 [workspace.package]
@@ -17,6 +18,7 @@ license = "MIT"
 # Internal crates
 shardd-types = { path = "libs/types" }
 shardd-storage = { path = "libs/storage" }
+shardd-broadcast = { path = "libs/broadcast" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
