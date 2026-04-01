@@ -1,74 +1,40 @@
-# Multi-node deployment with per-node PostgreSQL.
-# Each node has its own database — events sync via HTTP between nodes.
-#
-# Usage:
-#   docker compose up --build
-#   curl http://localhost:3001/health
-#   curl -X POST http://localhost:3001/events \
-#     -H 'Content-Type: application/json' \
-#     -d '{"bucket":"default","account":"alice","amount":100}'
-#   curl http://localhost:3002/state   # should see the event after sync
+# Per-node Postgres. Events replicate via HTTP broadcast.
+# Each node is fully independent — lose any, add any.
 
 services:
-  # ── Postgres instances (one per node) ───────────────────────────────
-
   db1:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: shardd
-      POSTGRES_USER: shardd
-      POSTGRES_PASSWORD: shardd
-    volumes:
-      - db1_data:/var/lib/postgresql/data
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    volumes: [db1_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shardd"]
       interval: 2s
       timeout: 5s
       retries: 10
-    networks:
-      - shardd
 
   db2:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: shardd
-      POSTGRES_USER: shardd
-      POSTGRES_PASSWORD: shardd
-    volumes:
-      - db2_data:/var/lib/postgresql/data
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    volumes: [db2_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shardd"]
       interval: 2s
       timeout: 5s
       retries: 10
-    networks:
-      - shardd
 
   db3:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: shardd
-      POSTGRES_USER: shardd
-      POSTGRES_PASSWORD: shardd
-    volumes:
-      - db3_data:/var/lib/postgresql/data
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    volumes: [db3_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shardd"]
       interval: 2s
       timeout: 5s
       retries: 10
-    networks:
-      - shardd
-
-  # ── Shardd nodes ────────────────────────────────────────────────────
 
   node1:
-    build:
-      context: .
-      dockerfile: apps/node/Dockerfile
-    container_name: shardd-node1
-    ports:
-      - "3001:3001"
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    ports: ["3001:3001"]
     environment:
       DATABASE_URL: postgres://shardd:shardd@db1/shardd
     command:
@@ -78,18 +44,11 @@ services:
       - --bootstrap=node2:3002
       - --bootstrap=node3:3003
     depends_on:
-      db1:
-        condition: service_healthy
-    networks:
-      - shardd
+      db1: { condition: service_healthy }
 
   node2:
-    build:
-      context: .
-      dockerfile: apps/node/Dockerfile
-    container_name: shardd-node2
-    ports:
-      - "3002:3002"
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    ports: ["3002:3002"]
     environment:
       DATABASE_URL: postgres://shardd:shardd@db2/shardd
     command:
@@ -99,18 +58,11 @@ services:
       - --bootstrap=node1:3001
       - --bootstrap=node3:3003
     depends_on:
-      db2:
-        condition: service_healthy
-    networks:
-      - shardd
+      db2: { condition: service_healthy }
 
   node3:
-    build:
-      context: .
-      dockerfile: apps/node/Dockerfile
-    container_name: shardd-node3
-    ports:
-      - "3003:3003"
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    ports: ["3003:3003"]
     environment:
       DATABASE_URL: postgres://shardd:shardd@db3/shardd
     command:
@@ -120,25 +72,13 @@ services:
       - --bootstrap=node1:3001
       - --bootstrap=node2:3002
     depends_on:
-      db3:
-        condition: service_healthy
-    networks:
-      - shardd
+      db3: { condition: service_healthy }
 
   dashboard:
-    build:
-      context: .
-      dockerfile: apps/dashboard/Dockerfile
-    container_name: shardd-dashboard
-    ports:
-      - "8080:8080"
-    networks:
-      - shardd
+    build: { context: ., dockerfile: apps/dashboard/Dockerfile }
+    ports: ["8080:8080"]
 
 volumes:
   db1_data:
   db2_data:
   db3_data:
-
-networks:
-  shardd:

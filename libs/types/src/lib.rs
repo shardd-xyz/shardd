@@ -52,10 +52,21 @@ pub struct CreateEventRequest {
     pub account: String,
     pub amount: i64,
     pub note: Option<String>,
-    /// Maximum allowed overdraft for this charge. `None` means no overdraft (balance >= 0).
-    /// `Some(500)` allows balance to go as low as -500. Only enforced for debits.
     #[serde(default)]
     pub max_overdraft: Option<u64>,
+    /// Minimum remote nodes that must ack before responding. 0 = fire-and-forget.
+    #[serde(default)]
+    pub min_acks: Option<u32>,
+    /// Max time (ms) to wait for acks. Default 500.
+    #[serde(default)]
+    pub ack_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AckInfo {
+    pub received: u32,
+    pub requested: u32,
+    pub timeout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +74,7 @@ pub struct CreateEventResponse {
     pub event: Event,
     pub event_count: usize,
     pub balance: i64,
+    pub acks: AckInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

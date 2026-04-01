@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 shardd-types = { workspace = true }
 shardd-storage = { workspace = true }
+shardd-broadcast = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 thiserror = { workspace = true }

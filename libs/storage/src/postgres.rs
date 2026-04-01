@@ -276,6 +276,74 @@ impl StorageBackend for PostgresStorage {
     }
 }
 
+// ── Additional methods (not on trait — Postgres-specific) ────────────
+
+impl PostgresStorage {
+    /// Bulk insert events with ON CONFLICT DO NOTHING. Returns count of newly inserted.
+    pub async fn insert_events_bulk(&self, events: &[Event]) -> Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+
+        // Build multi-row INSERT
+        let mut sql = String::from(
+            "INSERT INTO events (event_id, origin_node_id, origin_seq, created_at_unix_ms, bucket, account, amount, note) VALUES "
+        );
+        let mut params: Vec<String> = Vec::new();
+        for (i, _) in events.iter().enumerate() {
+            let base = i * 8;
+            if i > 0 { sql.push_str(", "); }
+            sql.push_str(&format!(
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base + 1, base + 2, base + 3, base + 4,
+                base + 5, base + 6, base + 7, base + 8
+            ));
+        }
+        sql.push_str(" ON CONFLICT (origin_node_id, origin_seq) DO NOTHING");
+
+        let mut query = sqlx::query(&sql);
+        for event in events {
+            query = query
+                .bind(&event.event_id)
+                .bind(&event.origin_node_id)
+                .bind(event.origin_seq as i64)
+                .bind(event.created_at_unix_ms as i64)
+                .bind(&event.bucket)
+                .bind(&event.account)
+                .bind(event.amount)
+                .bind(&event.note);
+        }
+
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    /// Read balance_summary materialized view. Returns [(bucket, account, balance)].
+    pub async fn read_balance_summary(&self) -> Result<Vec<(String, String, i64)>> {
+        let rows = sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT bucket, account, balance FROM balance_summary",
+        )
+        .fetch_all(&self.pool)
+        .await;
+
+        match rows {
+            Ok(r) => Ok(r),
+            Err(_) => {
+                // Fallback if materialized view doesn't exist
+                self.aggregate_balances().await
+            }
+        }
+    }
+
+    /// Refresh the materialized view (called by BatchWriter after flush).
+    pub async fn refresh_balance_summary(&self) -> Result<()> {
+        sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY balance_summary")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
 // Helper struct for mapping DB rows to Event
 #[derive(sqlx::FromRow)]
 struct EventRow {

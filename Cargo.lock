@@ -3304,6 +3304,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shardd-broadcast",
  "shardd-storage",
  "shardd-types",
  "sqlx",
