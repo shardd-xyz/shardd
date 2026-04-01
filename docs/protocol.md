@@ -1,6 +1,6 @@
 # Distributed Append-Only Ledger Protocol
 
-Version 1.0
+Version 1.1
 
 ## 1. Overview
 
@@ -57,7 +57,12 @@ Note: "locally_confirmed" is scoped to this node's view. An origin this node has
 
 A client sends a create request to any node. The receiving node:
 
-1. **Validates the overdraft guard** (debits only): if the projected balance (`current_balance + amount`) would fall below the floor (`-max_overdraft` or 0), reject with an error. This check is atomic — no two concurrent debits can both pass if only one should.
+1. **Validates the overdraft guard** (debits only): if the projected balance (`current_balance + amount`) would fall below the floor (`-max_overdraft` or 0), reject with an error. This check MUST be atomic with the balance update — implementations must use either:
+   - A compare-and-swap (CAS) loop on the balance value: read current balance, compute projected, if projected >= floor then atomically set the new balance, otherwise retry or reject. This allows lock-free concurrent credits while serializing competing debits on the same account.
+   - A per-account mutex/lock: acquire lock, check balance, update, release. Simpler but higher contention.
+   - A serialized write path (e.g., single-threaded event loop, actor model): all writes for a given account are processed sequentially. No concurrent debits possible.
+
+   The critical invariant: between reading the balance and updating it, no other debit on the same account can interleave. Concurrent credits are safe (they only increase the balance).
 
 2. **Assigns a sequence number**: the next value in this node's monotonic counter. Increment the counter.
 
@@ -176,10 +181,12 @@ On startup, balances are rebuilt from the database.
 **peers** — known peer addresses:
 - `addr` (primary key)
 
-**balance_summary** — materialized/cached view:
+**balance_summary** (OPTIONAL optimization) — cached balance view:
 - `bucket`, `account`, `balance` (= SUM(amount) from events)
 - Refreshed periodically (default every 5 seconds)
-- Used for fast balance bootstrap on startup
+- Purpose: startup optimization for large event tables. Instead of scanning millions of events to compute `SUM(amount) GROUP BY bucket, account`, read the pre-computed view.
+- NOT the source of truth. On startup, if the view is stale or missing, fall back to the full aggregate query. The in-memory balance cache is always rebuilt from events, not trusted from this view.
+- Implementations with small event tables can skip this entirely.
 
 ### 6.2 Conflict Handling
 
@@ -269,28 +276,47 @@ Response: `{"node_id": "string", "addr": "string", "peers": [...], "heads": {...
 **POST /peers/add** — Add a peer manually
 **GET /peers** — List known peers
 
-## 8. Checksum
+## 8. Convergence Verification
 
-For verifying convergence between nodes. Deterministic hash of all events.
+### 8.1 Head Comparison (Primary, O(origins))
 
-### 8.1 Canonical Format
+The primary convergence check. Compare contiguous heads per origin between two nodes. If all heads match, the nodes have the same contiguous event prefixes. This is O(number of origins) — fast regardless of event count.
 
-For each event, compute a string:
+Limitation: heads only prove prefix equality. They don't detect corrupted events within the prefix (same sequence, different payload).
+
+### 8.2 Full Checksum (Audit, O(events))
+
+For periodic auditing or when head comparison is insufficient.
+
+Canonical format per event:
 ```
 {origin_node_id}:{origin_seq}:{event_id}:{bucket}:{account}:{amount}
 ```
 
-Order all events by `(origin_node_id ASC, origin_seq ASC)`.
+Order by `(origin_node_id ASC, origin_seq ASC)`. Join with `\n`. SHA-256, hex-encoded lowercase (64 chars). Excludes `note` (cosmetic).
 
-Join with newline (`\n`).
+**Warning**: this scans all events. At millions of events, this is expensive. Use sparingly (e.g., daily audit, not per-sync-cycle).
 
-Hash with SHA-256. Encode as lowercase hexadecimal (64 characters).
+### 8.3 Incremental Verification (Recommended for Scale)
 
-The `note` field is excluded (cosmetic, not financial state).
+For large event tables, maintain per-origin rolling hash digests:
 
-### 8.2 Comparison
+**Rolling prefix digest**: a single 32-byte hash per origin, updated incrementally:
+```
+prefix_digest[0] = HASH("")
+prefix_digest[n] = HASH(prefix_digest[n-1] || event_hash(n))
+```
+Where `event_hash(n)` is the SHA-256 of the canonical event string.
 
-Two nodes with the same checksum have identical event sets. If checksums differ, the nodes have divergent data — use the head-based sync protocol to find and resolve the difference.
+- **Update cost**: O(1) per new contiguous event
+- **Compare cost**: O(origins) — compare `(head, prefix_digest)` per origin
+- **Storage**: 32 bytes per origin
+
+If two nodes have the same `(head, prefix_digest)` for an origin, their contiguous prefixes are cryptographically identical.
+
+**Block digests** (optional, for locating divergence): store a digest per block of N events (e.g., every 4096 sequences). If prefix digests differ, compare block digests to narrow the mismatch to a specific range without scanning all events. Storage: ~32 bytes per block.
+
+These incremental approaches are OPTIONAL optimizations. Implementations may start with head comparison only and add digest layers when event counts warrant it.
 
 ## 9. Overdraft Guard
 
@@ -368,11 +394,22 @@ Same as 11.1, plus after step 6:
 ### 11.4 Crash Recovery
 
 On restart after a crash:
-- Events in the batch writer buffer (not yet flushed) may be lost from this node's database
-- Those events were broadcast to peers before the crash (broadcast happens before/alongside batch queue)
-- Peers' orphan detectors will persist those events to their databases
-- This node catches up from peers via catch-up sync or bootstrap
-- Net result: zero events lost if at least one peer received the broadcast
+- Events in the batch writer buffer (not yet flushed) are lost from THIS node's database
+- Those events were broadcast to peers before the crash (broadcast happens before batch queue)
+- Peers' orphan detectors persist those events to their databases
+- **Sequence gap**: if this node's DB has events up to seq 55 but peers received seq 56 and 57 via broadcast, `MAX(origin_seq) + 1` from the local DB would yield 56 — reusing a sequence that peers already have.
+
+**Resolution**: on restart, BEFORE deriving `next_seq`, run a catch-up sync from peers. This pulls events 56 and 57 back into this node's DB. Then `MAX(origin_seq) + 1 = 58`, which is correct.
+
+**Startup sequence for crash recovery**:
+1. Read own DB: get `MAX(origin_seq)` for this node → tentative `next_seq`
+2. Run catch-up sync from peers (§4.3): pull all events peers have that this node's DB doesn't
+3. Re-derive `next_seq` from `MAX(origin_seq) + 1` after catch-up → correct value
+4. Resume serving
+
+If catch-up cannot reach any peer (e.g., network partition at restart), the node MUST NOT create new events until it has synced with at least one peer. Otherwise, it risks sequence reuse. It may still serve read requests from its local state.
+
+**Alternative**: persist `next_seq` to the database in the same transaction as the event insert (not separately). This ensures `next_seq` and events are always consistent in the DB. More complex but eliminates the catch-up requirement.
 
 ## 12. Configuration
 
@@ -390,7 +427,74 @@ On restart after a crash:
 | `orphan_age_ms` | 500 | Minimum age before an event is considered orphaned |
 | `broadcast_mode` | http | Broadcast transport (http, gossip) |
 
-## 13. Consistency Guarantees
+## 13. Compaction and Storage Management
+
+The event log is append-only by default. Without intervention, storage grows without bound.
+
+### 13.1 Snapshotting
+
+Periodically create a **balance snapshot**: a record of all account balances at a specific point in time, identified by the set of contiguous heads at snapshot creation.
+
+```
+Snapshot #42:
+  heads: {node-A: 50000, node-B: 30000, node-C: 12000}
+  balances: [{default, alice, 1500}, {default, bob, -200}, ...]
+  created_at: 2026-04-01T00:00:00Z
+```
+
+A snapshot is valid if all events up to the recorded heads were included in the balance computation.
+
+### 13.2 Log Truncation
+
+After creating a snapshot, events with `origin_seq <= snapshot_heads[origin]` for all origins can be deleted from the database. The snapshot captures their net effect on balances.
+
+**Constraint**: a node MUST NOT truncate events that other peers haven't yet replicated. Before truncating, verify that all known peers have heads >= the snapshot heads (via a catch-up sync or head comparison).
+
+**Constraint**: retain at least one snapshot. On startup, if the event log has been truncated, load the most recent snapshot and replay only events after the snapshot heads.
+
+### 13.3 When to Snapshot
+
+- Periodically (e.g., daily, weekly)
+- When event count exceeds a threshold (e.g., 10M events)
+- Before planned maintenance or scaling events
+
+Snapshotting and truncation are OPTIONAL. Systems with bounded event volume can skip this entirely.
+
+## 14. Peer Management
+
+### 14.1 Peer Set
+
+Each node maintains a bounded set of known peer addresses. Maximum size is configurable (`max_peers`, default 16).
+
+### 14.2 Discovery
+
+Peers are discovered via:
+- **Bootstrap configuration**: `--bootstrap` flag at startup
+- **Join handshake**: when a peer connects via `POST /join`, it shares its peer list
+- **Gossip** (if using gossip broadcast): SWIM protocol handles membership automatically
+- **Catch-up sync**: peers exchange peer lists during sync cycles
+
+### 14.3 Eviction
+
+When the peer set is full and a new peer is discovered:
+- **Strategy**: implementations SHOULD evict the peer with the longest time since last successful communication (LRU). Alternatives: random eviction, evict the peer with the highest latency.
+- The evicted peer is removed from the set and (if using persistent peer storage) deleted from the database.
+- The evicted peer is NOT notified — it may still consider this node a peer and send events, which are accepted normally.
+
+### 14.4 Health Tracking
+
+Implementations SHOULD track peer health:
+- **Last seen**: timestamp of the last successful HTTP response from this peer
+- **Failure count**: consecutive failed connection attempts
+- **Latency**: rolling average response time
+
+Peers that have been unreachable for an extended period (e.g., 5 minutes) SHOULD be evicted to make room for healthy peers discovered via gossip or sync.
+
+### 14.5 Self-Exclusion
+
+A node MUST NOT add itself to its own peer set. The node's own advertised address is excluded from peer discovery.
+
+## 15. Consistency Guarantees
 
 | Property | Guarantee |
 |----------|-----------|
@@ -403,3 +507,11 @@ On restart after a crash:
 | **Partition tolerance** | Nodes continue operating during network partitions; sync on reconnect |
 
 This system provides AP (availability + partition tolerance) from the CAP theorem, sacrificing strong consistency for eventual consistency.
+
+## 16. Open Issues and Future Work
+
+- **Strict overdraft enforcement**: requires consensus (e.g., Raft) or routing all debits for an account to a single node. Documented as a known limitation (§9.2).
+- **Rolling prefix digests**: incremental convergence verification (§8.3) is recommended but not required by this protocol version.
+- **Gossip-based peer discovery**: the protocol supports it but does not mandate a specific gossip implementation.
+- **Event signing**: no cryptographic signatures on events. In an untrusted environment, a malicious node can forge events with any `origin_node_id`. Adding ed25519 signatures per event would prevent this.
+- **Rate limiting**: no built-in mechanism. Implementations should add per-client or per-account rate limits at the API layer.
