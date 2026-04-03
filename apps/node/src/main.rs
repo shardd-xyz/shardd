@@ -2,6 +2,7 @@ mod api;
 mod batch_writer;
 mod orphan_detector;
 mod state;
+mod sync;
 
 use std::sync::Arc;
 
