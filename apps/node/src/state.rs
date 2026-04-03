@@ -483,6 +483,23 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
     }
 }
 
+// ── UnpersistedSource impl for OrphanDetector ────────────────────────
+
+impl<S: shardd_storage::StorageBackend> crate::orphan_detector::UnpersistedSource for SharedState<S> {
+    fn get_unpersisted_events(&self, cutoff_ms: u64) -> Vec<Event> {
+        self.unpersisted.iter()
+            .filter(|e| *e.value() <= cutoff_ms)
+            .filter_map(|e| self.event_buffer.get(e.key()).map(|v| v.value().clone()))
+            .collect()
+    }
+
+    fn mark_persisted(&self, keys: &[(String, u32, u64)]) {
+        for key in keys {
+            self.unpersisted.remove(key);
+        }
+    }
+}
+
 fn compute_contiguous_head(seqs: &[u64]) -> u64 {
     let mut head = 0u64;
     for &seq in seqs {

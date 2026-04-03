@@ -1,4 +1,5 @@
 mod batch_writer;
+mod orphan_detector;
 mod state;
 
 fn main() {
