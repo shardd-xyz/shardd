@@ -351,6 +351,29 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             .unwrap_or(0)
     }
 
+    pub fn get_all_balances(&self) -> Vec<AccountBalance> {
+        let now_ms = Event::now_ms();
+        let mut result = Vec::new();
+        for entry in self.accounts.iter() {
+            let (bucket, account) = entry.key();
+            if let Ok(s) = entry.value().try_lock() {
+                result.push(AccountBalance {
+                    bucket: bucket.clone(),
+                    account: account.clone(),
+                    balance: s.balance,
+                    available_balance: s.available_balance(now_ms),
+                    active_hold_total: s.holds.iter()
+                        .filter(|(eid, _, exp)| *exp > now_ms && !s.released.contains(eid))
+                        .map(|(_, amt, _)| *amt as i64)
+                        .sum(),
+                    event_count: s.event_count,
+                });
+            }
+        }
+        result.sort_by(|a, b| a.bucket.cmp(&b.bucket).then_with(|| a.account.cmp(&b.account)));
+        result
+    }
+
     pub fn get_heads(&self) -> BTreeMap<String, u64> {
         self.heads.iter()
             .map(|e| {
