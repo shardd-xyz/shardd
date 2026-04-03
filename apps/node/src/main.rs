@@ -151,11 +151,18 @@ async fn main() -> anyhow::Result<()> {
     // §13.1 step 8: Background tasks with JoinSet supervision
     let mut tasks = JoinSet::new();
 
-    // BatchWriter
+    // BatchWriter — with persistence notification (§3.3)
+    let persist_broadcaster = broadcaster.clone();
     let bw = batch_writer::BatchWriter::new(
         batch_rx, storage.clone(),
         cli.batch_flush_interval_ms, cli.batch_flush_size, cli.matview_refresh_ms,
-    );
+    ).with_on_persisted(move |keys: &[(String, u32, u64)]| {
+        let bc = persist_broadcaster.clone();
+        let keys = keys.to_vec();
+        tokio::spawn(async move {
+            bc.broadcast_persisted(&keys).await;
+        });
+    });
     tasks.spawn(bw.run());
 
     // OrphanDetector
@@ -282,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/collapsed", get(api::get_collapsed::<PostgresStorage>))
         .route("/collapsed/{bucket}/{account}", get(api::get_collapsed_account::<PostgresStorage>))
         .route("/persistence", get(api::get_persistence::<PostgresStorage>))
+        .route("/debug/origin/{id}", get(api::debug_origin::<PostgresStorage>))
         .route("/join", post(api::join::<PostgresStorage>))
         .route("/registry", get(api::get_registry::<PostgresStorage>))
         .route("/registry/decommission", post(api::decommission::<PostgresStorage>))
@@ -303,9 +311,28 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal)
         .await?;
 
-    // After server stops: wait for background tasks to finish
-    info!("server stopped, draining background tasks...");
-    tasks.shutdown().await;
+    // §13.3: After server stops, flush batch writer then drain tasks.
+    // Drop the app_state (router holds it; it's dropped when serve() returns).
+    // The BatchWriter flushes remaining events when all senders are dropped.
+    // Give it a grace period before aborting remaining tasks.
+    info!("server stopped, waiting for batch writer flush...");
+    let flush_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        tokio::select! {
+            result = tasks.join_next() => {
+                match result {
+                    Some(Ok(())) => info!("background task exited cleanly"),
+                    Some(Err(e)) => warn!(error = %e, "background task failed"),
+                    None => break, // all tasks done
+                }
+            }
+            _ = tokio::time::sleep_until(flush_deadline) => {
+                info!("flush deadline reached, aborting remaining tasks");
+                tasks.shutdown().await;
+                break;
+            }
+        }
+    }
     info!("all tasks drained, goodbye");
 
     Ok(())

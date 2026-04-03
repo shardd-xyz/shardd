@@ -266,6 +266,15 @@ pub async fn get_persistence<S: StorageBackend>(
     Json(state.persistence_stats())
 }
 
+// ── GET /debug/origin/:id (§7.1) ────────────────────────────────────
+
+pub async fn debug_origin<S: StorageBackend>(
+    State(state): State<SharedState<S>>,
+    Path(origin_id): Path<String>,
+) -> Json<DebugOriginResponse> {
+    Json(state.debug_origin(&origin_id))
+}
+
 // ── POST /join (§7.2) ───────────────────────────────────────────────
 
 pub async fn join<S: StorageBackend>(

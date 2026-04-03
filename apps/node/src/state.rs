@@ -670,6 +670,41 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         result
     }
 
+    // ── Debug (§7.1) ──────────────────────────────────────────────────
+
+    pub fn debug_origin(&self, origin_id: &str) -> DebugOriginResponse {
+        let mut epochs = BTreeMap::new();
+        // Find all epoch keys for this origin
+        for entry in self.heads.iter() {
+            let (origin, epoch) = entry.key();
+            if origin != origin_id { continue; }
+            let head = *entry.value();
+            let pending: Vec<u64> = self.pending_seqs
+                .get(&(origin.clone(), *epoch))
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            let max_known = self.max_known_seqs
+                .get(&(origin.clone(), *epoch))
+                .map(|v| *v)
+                .unwrap_or(head);
+            // present_seqs = 1..=head + pending
+            let mut present: Vec<u64> = (1..=head).collect();
+            present.extend(&pending);
+            let count = present.len();
+            epochs.insert(*epoch, DebugEpochInfo {
+                contiguous_head: head,
+                present_seqs: pending, // only gaps/pending, not all seqs (too large)
+                min_seq: if count > 0 { Some(1) } else { None },
+                max_seq: if max_known > 0 { Some(max_known) } else { None },
+                count,
+            });
+        }
+        DebugOriginResponse {
+            origin_node_id: origin_id.to_string(),
+            epochs,
+        }
+    }
+
     // ── Private helpers ──────────────────────────────────────────────
 
     fn advance_head(&self, epoch_key: &EpochKey, seq: u64) {
