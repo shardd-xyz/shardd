@@ -1,6 +1,6 @@
 # Distributed Append-Only Ledger Protocol
 
-Version 1.6
+Version 1.7
 
 ## 1. Overview
 
@@ -84,16 +84,18 @@ Note: "locally_confirmed" is scoped to this node's view. An origin this node has
 
 ### 3.1 Creation
 
-A client sends a create request to any node. The receiving node:
+A client sends a create request to any node. The receiving node performs steps 1–5 within a **single per-account atomic section**. Implementations must use one of:
+- A per-account mutex/lock
+- A serialized write path (e.g., single-threaded event loop, actor model)
+- A compare-and-swap (CAS) loop that covers the full state check (idempotency + balance + hold reservation)
 
-1. **Checks idempotency** (if `idempotency_nonce` is present): if an event with the same `(idempotency_nonce, bucket, account, amount)` already exists, return the existing event without creating a new one (§10.3).
+The critical invariant: the idempotency check, overdraft validation, hold reservation, and event creation for a given `(bucket, account)` are indivisible. No concurrent operation on the same account can interleave between any of these steps. Concurrent credits are safe (they only increase the balance) and MAY bypass the serialization.
 
-2. **Validates the overdraft guard** (debits only): if the projected available balance after applying BOTH the debit amount and any newly-created hold would fall below the floor (`-max_overdraft` or 0), reject with an error. This admission MUST atomically reserve both the debit and its hold exposure — implementations must use either:
-   - A compare-and-swap (CAS) loop on an `available_balance` / reserved-balance representation: read current available balance, compute projected including the new hold, if projected >= floor then atomically reserve it, otherwise retry or reject.
-   - A per-account mutex/lock: acquire lock, check balance, update, release. Simpler but higher contention.
-   - A serialized write path (e.g., single-threaded event loop, actor model): all writes for a given account are processed sequentially. No concurrent debits possible.
+Within the atomic section:
 
-   The critical invariant: between reading the available balance and reserving the new debit + hold, no other competing debit on the same account can interleave. Concurrent credits are safe (they only increase the balance).
+1. **Checks idempotency** (if `idempotency_nonce` is present): if an event with the same `(idempotency_nonce, bucket, account, amount)` already exists in the in-memory cache or database, return the existing canonical winning event without creating a new one (§10.3). Release the atomic section and return immediately.
+
+2. **Validates the overdraft guard** (debits only): if the projected available balance after applying BOTH the debit amount and any newly-created hold would fall below the floor (`-max_overdraft` or 0), reject with an error. Release the atomic section and return the error.
 
 3. **Assigns a sequence number**: the next value in this node's monotonic counter. Increment the counter.
 
@@ -619,7 +621,7 @@ This is the mechanism by which one node's spending activity reduces available ba
 
 ### 11.6 Limitations
 
-- **Clock skew**: nodes with skewed clocks will disagree on whether a hold is active. For holds measured in minutes, clock skew of seconds is negligible.
+- **Clock skew**: nodes with skewed clocks will disagree on whether a hold is active. Nodes MUST run NTP or an equivalent clock synchronization protocol with a maximum drift of 1 second. Hold durations (default 10 minutes) are chosen to be much larger than this bound, making skew negligible relative to hold lifetime. Implementations SHOULD monitor clock drift and alert if it exceeds the bound.
 - **Stale holds**: if broadcast is delayed, a node may not know about a peer's holds until catch-up sync. During this window, the node's `available_balance` is higher than it should be.
 - **Over-reservation**: aggressive hold multipliers reduce available balance significantly, potentially rejecting legitimate debits. Tune `hold_multiplier` and `hold_duration_ms` based on actual traffic patterns.
 - **Correction latency**: after a duplicate debit is detected, `available_balance` remains too low until the matching `hold_release` propagates.
@@ -647,6 +649,13 @@ For high-throughput scenarios where piggyback bandwidth is insufficient, nodes f
 | Gossip piggyback | Default for small events at moderate throughput | O(log N) rounds | Minimal — reuses SWIM traffic |
 | Dedicated gossip messages | When piggyback buffer is full | O(log N) rounds | Separate UDP messages |
 | Direct HTTP POST | Quorum acks (`min_acks > 0`), large event batches, or when gossip is too slow | 1 RTT to target | One connection per peer |
+
+**Gossip buffer management**:
+- **Buffer capacity**: configurable (default 10,000 events). Bounded to prevent unbounded memory growth under burst load.
+- **Drop policy**: when the buffer is full, the oldest un-sent events are dropped from the gossip buffer. Dropped events are NOT lost — they remain in the local event buffer and database. Peers will receive them via catch-up sync (§4.2).
+- **Retransmit policy**: each event is retransmitted up to `swim_gossip_fanout` times (default 3) across consecutive gossip rounds. After that, it is removed from the gossip buffer. This ensures reliable delivery in the common case (3 independent peers receive each event).
+- **HTTP fallback trigger**: if the gossip buffer fill level exceeds 80% for more than 5 seconds, the node switches to direct HTTP POST for new events until the buffer drains below 50%. This prevents gossip lag from growing unbounded under sustained high throughput.
+- **Payload budget per SWIM message**: events piggybacked on ping/ack messages are limited to `gossip_piggyback_max_bytes` (default 4096 bytes, roughly 10-20 events). Larger payloads use dedicated gossip messages or HTTP.
 
 ### 12.3 Quorum Acknowledgments
 
@@ -676,6 +685,8 @@ The node wraps foca with:
 | `swim_indirect_probes` | 3 | Number of peers asked to indirect-probe a suspect |
 | `swim_suspicion_timeout_ms` | 5000 | Time in suspect state before declaring dead |
 | `swim_gossip_fanout` | 3 | Number of peers to send each gossip message to |
+| `gossip_buffer_capacity` | 10000 | Max events in gossip broadcast buffer |
+| `gossip_piggyback_max_bytes` | 4096 | Max bytes piggybacked on SWIM ping/ack messages |
 
 ## 13. Node Lifecycle
 
@@ -765,7 +776,25 @@ SWIM membership events propagate automatically via the gossip protocol — no ex
 
 SWIM handles real-time membership. The following mechanisms ensure the permanent registry converges for historical origins that predate a node's join:
 
-**Catch-up sync**: during every catch-up sync cycle (§4.2), nodes exchange their full registries. Entries are merged by `node_id` — if both sides have an entry, keep the one with the later `last_seen_at_unix_ms`. This ensures a new node learns about origins from long-dead nodes that SWIM would not know about.
+**Catch-up sync**: during every catch-up sync cycle (§4.2), nodes exchange their full registries. Entries are merged by `node_id` using the following field-specific rules:
+
+```
+merge(local, remote) → result:
+  result.node_id          = local.node_id  (same key)
+  result.first_seen_at_unix_ms = MIN(local.first_seen_at_unix_ms, remote.first_seen_at_unix_ms)
+  result.last_seen_at_unix_ms  = MAX(local.last_seen_at_unix_ms, remote.last_seen_at_unix_ms)
+  result.addr             = (whichever entry has the later last_seen_at_unix_ms).addr
+
+  # Status merge — decommissioned is a monotonic tombstone (CRDT join-semilattice):
+  if local.status == "decommissioned" OR remote.status == "decommissioned":
+    result.status = "decommissioned"   # once decommissioned, always decommissioned
+  else:
+    result.status = (whichever entry has the later last_seen_at_unix_ms).status
+```
+
+The `decommissioned` status is a tombstone — once set by an operator, it is never overridden by any merge, regardless of timestamps. This prevents a stale view from resurrecting a retired node. All other fields follow "latest wins" semantics.
+
+This merge function is commutative, associative, and idempotent (a CRDT join), so registries converge regardless of merge order or duplication.
 
 **Join handshake**: `POST /join` response includes the full node registry. A new node gets the complete registry from its bootstrap peer on first contact, covering all historical origins.
 
