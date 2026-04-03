@@ -537,6 +537,29 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         self.total_event_count.load(Relaxed)
     }
 
+    /// Sweep expired holds from all accounts (§5.3).
+    /// Call periodically from a background task.
+    pub async fn sweep_expired_holds(&self) {
+        let now_ms = Event::now_ms();
+        for entry in self.accounts.iter() {
+            if let Ok(mut state) = entry.value().try_lock() {
+                // Collect expired hold event_ids
+                let expired: Vec<String> = state.holds.iter()
+                    .filter(|(_, _, expires)| *expires <= now_ms)
+                    .map(|(eid, _, _)| eid.clone())
+                    .collect();
+
+                // Remove expired holds
+                state.holds.retain(|(_, _, expires)| *expires > now_ms);
+
+                // Evict release markers for expired holds
+                for eid in &expired {
+                    state.released.remove(eid);
+                }
+            }
+        }
+    }
+
     pub fn get_events_from_buffer(&self, origin: &str, epoch: u32, from_seq: u64, to_seq: u64) -> Vec<Event> {
         (from_seq..=to_seq)
             .filter_map(|seq| {
