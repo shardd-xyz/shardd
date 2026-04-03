@@ -1,0 +1,15 @@
+# foca SWIM Driver (FocaDriver)
+
+**Source**: brutal-plan
+**Plan**: `workspace/plans/PLAN-0001-v2-full-rewrite.md`
+**Phase**: 3
+
+## Description
+Implement per plan Phase 3. See PLAN-0001 for full details.
+
+## Dependencies
+- Blocked by: 0014
+- Blocks: 0016,0017
+
+## History
+- 2026-04-03 Created from brutal-plan PLAN-0001
