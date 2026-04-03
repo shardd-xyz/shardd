@@ -1,4 +1,4 @@
-# Benchmarks: Load Testing + Multi-Node
+# Protocol Compliance Test Suite
 
 **Source**: brutal-plan
 **Plan**: `workspace/plans/PLAN-0001-v2-full-rewrite.md`
@@ -8,7 +8,7 @@
 Implement per plan Phase 5. See PLAN-0001 for full details.
 
 ## Dependencies
-- Blocked by: 0023
+- Blocked by: 0013,0016,0019,0020
 - Blocks: 
 
 ## History
@@ -16,3 +16,4 @@ Implement per plan Phase 5. See PLAN-0001 for full details.
 - 2026-04-03 08:10 Deferred: not blocking v2 core functionality.
   HttpBroadcaster provides equivalent functionality to gossip.
   Benchmarks and comprehensive tests to be added post-core.
+- 2026-04-03 09:15 Task completed.
