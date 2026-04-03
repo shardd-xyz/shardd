@@ -1,5 +1,7 @@
 # shardd Architecture
 
+This document describes the current Rust prototype. When it diverges from [protocol.md](./protocol.md), the protocol document is the normative target design.
+
 ## Overview
 
 shardd is a distributed, multi-writer, eventually-consistent append-only ledger. Each node independently accepts credit/debit events, stores them in its own PostgreSQL, and replicates to peers via HTTP broadcast. Postgres is NOT on the hot path — events propagate instantly via broadcast and are persisted asynchronously.

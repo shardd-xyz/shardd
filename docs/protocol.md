@@ -1,6 +1,6 @@
 # Distributed Append-Only Ledger Protocol
 
-Version 1.5
+Version 1.6
 
 ## 1. Overview
 
@@ -23,15 +23,15 @@ The atomic unit of data. Immutable once created.
 | `origin_epoch` | uint32 | Restart epoch. Incremented each time the origin node starts. Starts at 1. |
 | `origin_seq` | uint64 | Monotonically increasing sequence number, per origin node per epoch. Starts at 1, gapless within an epoch. |
 | `created_at_unix_ms` | uint64 | Creation timestamp (milliseconds since Unix epoch) |
-| `type` | string | Event type: `standard` or `void`. Default: `standard`. |
+| `type` | string | Event type: `standard`, `void`, or `hold_release`. Default: `standard`. |
 | `bucket` | string | Top-level namespace (e.g., tenant, environment) |
 | `account` | string | Account within the bucket |
 | `amount` | int64 | Positive = credit, negative = debit |
 | `note` | string (nullable) | Optional human-readable description |
 | `idempotency_nonce` | string (nullable) | Client-supplied deduplication nonce. Max 128 characters. |
-| `void_ref` | string (nullable) | For `void` type events only: the `event_id` of the event being voided. |
-| `hold_amount` | uint64 | Additional balance to reserve beyond the charge. Default: 0. |
-| `hold_expires_at_unix_ms` | uint64 | Timestamp (ms since epoch) when the hold auto-releases. Default: 0. |
+| `void_ref` | string (nullable) | For system-generated correction events (`void`, `hold_release`) only: the `event_id` of the event being corrected. |
+| `hold_amount` | uint64 | For held debit `standard` events only: additional balance to reserve beyond the charge. Default: 0. |
+| `hold_expires_at_unix_ms` | uint64 | For held debit `standard` events: timestamp (ms since epoch) when the hold auto-releases. Default: 0. |
 
 The tuple `(origin_node_id, origin_epoch, origin_seq)` is globally unique and serves as the deduplication key.
 
@@ -41,8 +41,9 @@ The tuple `(origin_node_id, origin_epoch, origin_seq)` is globally unique and se
 |------|-------------|
 | `standard` | A normal credit or debit. Created by clients. |
 | `void` | A system-generated event that negates a duplicate. Created automatically during idempotency conflict resolution (§10). |
+| `hold_release` | A system-generated event that cancels a debit's hold without changing settled balance. Used when a held debit is later corrected (§10, §11). |
 
-Both types are immutable, append-only, and replicated identically.
+All three event types are immutable, append-only, and replicated identically.
 
 ### 2.3 Node
 
@@ -57,9 +58,9 @@ An independent process with:
 Two balance views exist for each `(bucket, account)` pair:
 
 ```
-balance           = SUM(amount)  -- settled balance, all events
-available_balance = balance - SUM(hold_amount WHERE hold_expires_at_unix_ms > now_ms)
-                                 -- balance minus active holds
+balance           = SUM(amount)          -- settled balance, all events
+active_holds      = SUM(effective_hold)  -- active holds after corrections (§11.3)
+available_balance = balance - active_holds
 ```
 
 - **`balance`**: the true, settled balance. Sum of all `amount` values across all events from all origins. Used for usage history, reporting, auditing.
@@ -87,18 +88,18 @@ A client sends a create request to any node. The receiving node:
 
 1. **Checks idempotency** (if `idempotency_nonce` is present): if an event with the same `(idempotency_nonce, bucket, account, amount)` already exists, return the existing event without creating a new one (§10.3).
 
-2. **Validates the overdraft guard** (debits only): if the projected available balance (`available_balance + amount`) would fall below the floor (`-max_overdraft` or 0), reject with an error. This check MUST be atomic with the balance update — implementations must use either:
-   - A compare-and-swap (CAS) loop on the balance value: read current available balance, compute projected, if projected >= floor then atomically set the new balance, otherwise retry or reject. This allows lock-free concurrent credits while serializing competing debits on the same account.
+2. **Validates the overdraft guard** (debits only): if the projected available balance after applying BOTH the debit amount and any newly-created hold would fall below the floor (`-max_overdraft` or 0), reject with an error. This admission MUST atomically reserve both the debit and its hold exposure — implementations must use either:
+   - A compare-and-swap (CAS) loop on an `available_balance` / reserved-balance representation: read current available balance, compute projected including the new hold, if projected >= floor then atomically reserve it, otherwise retry or reject.
    - A per-account mutex/lock: acquire lock, check balance, update, release. Simpler but higher contention.
    - A serialized write path (e.g., single-threaded event loop, actor model): all writes for a given account are processed sequentially. No concurrent debits possible.
 
-   The critical invariant: between reading the balance and updating it, no other debit on the same account can interleave. Concurrent credits are safe (they only increase the balance).
+   The critical invariant: between reading the available balance and reserving the new debit + hold, no other competing debit on the same account can interleave. Concurrent credits are safe (they only increase the balance).
 
 3. **Assigns a sequence number**: the next value in this node's monotonic counter. Increment the counter.
 
 4. **Generates a UUID** for the event_id.
 
-5. **Sets hold metadata** (debits only): if the node is configured for balance holds (§11), set `hold_amount` and `hold_expires_at_unix_ms` on the event.
+5. **Sets hold metadata** (debits only): if the node is configured for balance holds (§11), set `hold_amount` and `hold_expires_at_unix_ms` on the event. The reservation described by these fields is part of the same atomic admission from step 2.
 
 6. **Updates in-memory caches**: balance, available balance, active holds, contiguous head, origin tracking. These updates are the source of truth for subsequent requests — not the database.
 
@@ -112,13 +113,13 @@ A client sends a create request to any node. The receiving node:
 
 When a node receives an event from a peer (via broadcast or sync):
 
-1. **Deduplication check**: if `origin_seq <= contiguous_head` for this `(origin_node_id, origin_epoch)`, or the event is already in the event buffer, discard as duplicate.
+1. **Durable presence claim**: atomically establish durable local presence for `(origin_node_id, origin_epoch, origin_seq)` using an indexed unique key. If local durable storage already contains the key, discard the event as a duplicate. The usual implementation is a unique index on the `events` table (or an equivalent durable claim table) with conflict-skip semantics.
 
 2. **Idempotency conflict check**: if the event has an `idempotency_nonce`, check for an existing event with the same `(idempotency_nonce, bucket, account, amount)`. If a conflict is detected, handle per §10.4.
 
-3. **Update in-memory caches**: balance, available balance, active holds (if hold metadata is present), contiguous head (with gap tracking), origin tracking.
+3. **Update in-memory caches**: balance, available balance, active holds / released holds (if hold metadata or release metadata is present), contiguous head (with gap tracking), origin tracking.
 
-4. **Queue for persistence** to this node's own database.
+4. **Persist the full event** to this node's own database if the durable presence claim was recorded separately from the append-only event row.
 
 The overdraft guard is NOT applied to replicated events. Replicated events are accepted unconditionally — the originating node already validated them.
 
@@ -174,7 +175,7 @@ When a new node joins or a node restarts with empty/partial storage:
 5. Execute the fetch plan in parallel: split ranges across peers by latency and availability. Multiple origin-epoch pairs can be fetched concurrently, and large ranges for a single pair can be split across peers (e.g., peer A serves seq 1–5000, peer C serves seq 5001–10000).
 6. Insert all events into local storage and in-memory caches
 7. Recompute balances from events (`SUM(amount) GROUP BY bucket, account`)
-8. Start serving
+8. Start serving protected traffic once readiness criteria are satisfied (§13.2)
 
 Parallel bootstrap dramatically reduces cold-start time for a new node joining a cluster with a large event history. Dedup handles any overlap from conservative range splitting.
 
@@ -188,9 +189,10 @@ Each node maintains these caches in memory for fast reads:
 |-------|-----|-------|---------|
 | Balances | (bucket, account) | int64 (atomic) | Balance reads, reporting |
 | Available Balances | (bucket, account) | computed | Overdraft checks |
-| Active Holds | (bucket, account) | list of {hold_amount, hold_expires_at_unix_ms} | Available balance computation |
+| Active Holds | (bucket, account) | list of {event_id, hold_amount, hold_expires_at_unix_ms} | Available balance computation |
+| Released Holds | event_id | bool / set membership | Track hold releases for available balance computation |
 | Heads | (origin_id, epoch) | uint64 | Sync protocol, collapsed state |
-| Account Origins | (bucket, account) | set of origin_ids | Collapsed state computation |
+| Account Origin Epochs | (bucket, account) | set of {(origin_id, epoch)} | Collapsed state computation |
 | Max Known Seqs | (origin_id, epoch) | uint64 | Collapsed state (detect gaps) |
 | Event Buffer | (origin_id, epoch, seq) | Event | Orphan recovery, serve recent events |
 | Unpersisted | (origin_id, epoch, seq) | timestamp | Track what's not yet in database |
@@ -206,17 +208,17 @@ When an event arrives with sequence N for an `(origin_node_id, origin_epoch)`:
 
 Each epoch has its own independent head starting at 0. A new epoch from a known origin starts fresh — head 0, empty pending set.
 
-This is purely in-memory. No database queries on the hot path.
+Head advancement remains purely in-memory after durable event admission has established local presence.
 
 ### 5.2 Balance Updates
 
-Balances are updated atomically (compare-and-swap for debits, simple add for credits) at the time the event is accepted into the in-memory cache. The database is NOT consulted for balance reads or writes on the hot path.
+Balances are updated atomically (compare-and-swap / reservation for debits, simple add for credits) at the time the event is accepted into the in-memory cache. The database is NOT consulted for balance reads on the hot path, but replicated-event admission MAY consult durable storage for the replay-safe presence check in §3.2.
 
 On startup, balances are rebuilt from the database.
 
 ### 5.3 Hold Expiry
 
-Periodically sweep the Active Holds lists and remove expired entries. This is an optimization — expired holds are excluded from `available_balance` by the time check regardless, but cleanup prevents unbounded memory growth.
+Periodically sweep the Active Holds lists and remove expired entries. This is an optimization — expired holds are excluded from `available_balance` by the time check regardless, but cleanup prevents unbounded memory growth. Implementations that cache released holds SHOULD also evict release markers once the underlying hold has expired.
 
 ## 6. Persistence Layer
 
@@ -224,11 +226,12 @@ Periodically sweep the Active Holds lists and remove expired entries. This is an
 
 **events** — append-only event log:
 - Primary key: `event_id`
-- Unique constraint: `(origin_node_id, origin_epoch, origin_seq)` — the dedup key
+- Unique constraint: `(origin_node_id, origin_epoch, origin_seq)` — the dedup key and durable replay-safe presence check
 - Columns: all fields from §2.1
 - Indexes:
   - `(bucket, account)` for balance aggregation
   - `(created_at_unix_ms)` for time-ordered queries
+  - `(void_ref)` WHERE `void_ref IS NOT NULL` — for correction and hold-release lookups
   - `(idempotency_nonce, bucket, account, amount)` WHERE `idempotency_nonce IS NOT NULL` — for conflict detection
 
 **node_meta** — this node's identity:
@@ -252,7 +255,7 @@ Periodically sweep the Active Holds lists and remove expired entries. This is an
 
 ### 6.2 Conflict Handling
 
-All inserts use conflict-skip semantics on `(origin_node_id, origin_epoch, origin_seq)`. If a row already exists with the same key, the insert is silently skipped.
+All inserts / durable claims use conflict-skip semantics on `(origin_node_id, origin_epoch, origin_seq)`. If a row already exists with the same key, the insert is silently skipped. On replicated admission, only the request that successfully establishes durable local presence for the key may apply the event's in-memory effects; conflicting replays are ignored.
 
 For integrity verification: if a conflict is detected, the existing row's `event_id` should be compared with the incoming event's `event_id`. If they differ, this indicates data corruption — log a warning. (Sequence reuse across epochs is impossible by construction; within an epoch it indicates a bug.)
 
@@ -376,7 +379,7 @@ The primary convergence check. Compare contiguous heads per `(origin_node_id, or
 
 At 200 nodes with infrequent restarts, the number of origin-epoch pairs stays manageable (a node that has restarted 10 times contributes 10 pairs).
 
-Limitation: heads only prove prefix equality. They don't detect corrupted events within the prefix (same sequence, different payload).
+Limitation: heads only prove prefix equality. They don't detect corrupted events within the prefix (same sequence, different payload), and they are not by themselves a replay-safe deduplication authority. Replay safety comes from the durable presence check on `(origin_node_id, origin_epoch, origin_seq)` (§3.2, §6.2).
 
 ### 8.2 Full Checksum (Audit, O(events))
 
@@ -464,11 +467,11 @@ Including `amount` in the composite key ensures that a nonce reused with a diffe
 
 On the originating node, idempotency is enforced at event creation time:
 
-1. **In-memory check**: maintain a map of `(idempotency_nonce, bucket, account, amount) → event` for recent events. If the key exists, return the original event and balance — do not create a new event.
+1. **In-memory check**: maintain a map of `(idempotency_nonce, bucket, account, amount) → canonical winning event` for recent events. If the key exists, return that event and balance — do not create a new event.
 
-2. **Database fallback**: if the in-memory cache has been evicted (e.g., after restart), query the events table for a matching composite key. If found, return the existing event.
+2. **Database fallback**: if the in-memory cache has been evicted (e.g., after restart), query the events table for matching composite keys. If one or more matches exist, return the canonical winner using the deterministic rule from §10.4.
 
-3. **Response**: a deduplicated request returns the original event (HTTP 200, not 201).
+3. **Response**: a deduplicated request returns the canonical winning event (HTTP 200, not 201).
 
 The in-memory cache may be bounded (e.g., LRU with TTL of 24 hours). After eviction, the database is the backstop.
 
@@ -485,9 +488,9 @@ Two nodes may independently accept events with the same composite idempotency ke
 
 All nodes apply the same rule and agree on the winner.
 
-### 10.5 Void Emission
+### 10.5 Correction Emission
 
-Any node that detects an idempotency conflict emits a void event for the loser. The void is placed on the emitting node's own sequence.
+Any node that detects an idempotency conflict emits correction events for the loser on the emitting node's own sequence.
 
 When a node detects a conflict (either its own event lost, or it sees an unresolved conflict for a different origin):
 
@@ -497,39 +500,30 @@ When a node detects a conflict (either its own event lost, or it sees an unresol
    - `amount`: negation of the voided event's amount (e.g., if the voided event was `-50`, the void event is `+50`)
    - `void_ref`: the `event_id` of the voided (losing) event
    - `idempotency_nonce`: `"void:{loser_event_id}"` — deterministic, derived from the event being voided
-   - `hold_amount`: 0 (no hold on void events)
+   - `hold_amount`: 0
    - `note`: human-readable reason, e.g., `"void: duplicate of event {winner_event_id}"`
 
-2. Before emitting, check whether an event with idempotency key `("void:{loser_event_id}", bucket, account, amount)` already exists locally (in-memory or database). If it does, do not emit.
+2. If the losing event is a debit with an active hold, create a new `hold_release` event on this node's own sequence:
+   - `type`: `hold_release`
+   - `bucket`, `account`: same as the released debit
+   - `amount`: 0
+   - `void_ref`: the `event_id` of the debit whose hold is being released
+   - `idempotency_nonce`: `"release:{loser_event_id}"` — deterministic, derived from the held event being released
+   - `hold_amount`: 0
+   - `hold_expires_at_unix_ms`: 0
+   - `note`: human-readable reason, e.g., `"release hold: duplicate of event {winner_event_id}"`
 
-3. Broadcast the void event to all peers like any other event.
+3. Before emitting either correction, check whether a local event with the corresponding deterministic idempotency key already exists (in-memory or database). If it does, do not emit the duplicate correction.
 
-### 10.6 Multiple Void Emission (Cascade)
+4. Broadcast emitted correction events to all peers like any other event.
 
-Because broadcast latency between global nodes can be 2–300ms, multiple nodes may independently emit void events for the same loser before hearing about each other's voids. This is safe.
+### 10.6 Multiple Correction Emission
 
-All such voids share the same idempotency nonce `"void:{loser_event_id}"`, so they are themselves duplicates. The idempotency mechanism resolves them recursively: the oldest void wins, and the losing voids are voided in turn. Each void-of-void has a unique `idempotency_nonce` (`"void:{losing_void_event_id}"`), so no further cascade occurs.
+Because broadcast latency between global nodes can be 2–300ms, multiple nodes may independently emit correction events for the same loser before hearing about each other's corrections. This is safe.
 
-**Example** — node B dies, nodes A, C, D all emit voids:
-
-```
--- Original conflict
-A:205  standard  -50  nonce="completion:abc"         ← winner
-B:310  standard  -50  nonce="completion:abc"         ← loser
-
--- Three nodes emit voids (same nonce, so they conflict with each other)
-A:206  void  +50  void_ref=B:310  nonce="void:{B:310.id}"   ← oldest, wins
-C:891  void  +50  void_ref=B:310  nonce="void:{B:310.id}"   ← duplicate void
-D:444  void  +50  void_ref=B:310  nonce="void:{B:310.id}"   ← duplicate void
-
--- Losing voids get voided (unique nonces, no further cascade)
-C:892  void  -50  void_ref=C:891  nonce="void:{C:891.id}"
-D:445  void  -50  void_ref=D:444  nonce="void:{D:444.id}"
-
-SUM = -50 ✓
-```
-
-In general, N nodes emitting voids for the same loser produces `2N - 3` correction events beyond the single void needed. For a 3–5 node cluster, this is a handful of extra events for a rare scenario (cross-region idempotency conflict with a dead originator). The balance converges correctly regardless.
+- Multiple `void` events for the same loser still conflict with each other. The same deterministic winner rule applies recursively until one canonical correction remains.
+- Multiple `hold_release` events for the same loser are harmless. They carry `amount = 0`, and implementations treat a hold as released if at least one matching `hold_release` exists for the referenced event.
+- No fixed upper bound on the total number of correction events is guaranteed; it depends on timing and partition behavior. Implementations SHOULD minimize duplicate corrections by checking local cache and database state before emitting.
 ### 10.7 Balance Model
 
 Balance remains a pure sum over all events:
@@ -538,7 +532,7 @@ Balance remains a pure sum over all events:
 balance(bucket, account) = SUM(amount) for all events WHERE bucket = b AND account = a
 ```
 
-This includes both `standard` and `void` events. Void events have negating amounts, so they cancel the duplicate's effect in the sum.
+This includes `standard`, `void`, and `hold_release` events. Void events have negating amounts, so they cancel the duplicate's effect in the sum. `hold_release` events have `amount = 0`, so they affect `available_balance` only — not settled balance.
 
 Example:
 ```
@@ -551,14 +545,14 @@ No derived state. No mutable flags. The log is a set of immutable entries whose 
 
 ### 10.8 Consistency Window
 
-Between conflict detection and void propagation, the balance is temporarily incorrect (double-charged). The duration of this window is bounded by broadcast latency (typically < 100ms within a region) or catch-up sync interval (default 30 seconds).
+Between conflict detection and correction propagation, the balance is temporarily incorrect (double-charged), and `available_balance` may be temporarily over-reserved until the matching `hold_release` arrives. The duration of this window is bounded by broadcast latency (typically < 100ms within a region) or catch-up sync interval (default 30 seconds).
 
 ### 10.9 Operational Notes
 
 - **Nonce generation**: clients SHOULD derive the nonce deterministically from the operation (e.g., `completion:{request_id}`). Random nonces per attempt defeat the purpose.
 - **Retry target**: clients SHOULD retry against the same node/region to avoid cross-node conflicts entirely.
 - **Events without nonces**: events with `idempotency_nonce = null` bypass idempotency checks. They are never considered duplicates.
-- **Void events in usage history**: void events are visible to users in their usage history, clearly marked with `type=void` and a reference to the original event. This provides full auditability.
+- **Correction events in usage history**: `void` and `hold_release` events are visible to users in their usage history, clearly marked with their `type` and a reference to the original event. This provides full auditability.
 
 ## 11. Balance Holds
 
@@ -576,15 +570,24 @@ This is a soft distributed lock — it does not require consensus and does not g
 
 3. **Expiry**: holds expire passively. No event is emitted on expiry. Each node independently stops including the hold in `available_balance` once `now_ms >= hold_expires_at_unix_ms`. Since all nodes use the same expiry timestamp from the event, they converge (modulo clock skew).
 
-4. **No early release**: holds cannot be released early. They expire at the specified time. This keeps the model simple — no mutable state, no release events.
+4. **Early release for corrections only**: a hold MAY be released early by a system-generated `hold_release` event when the underlying debit is corrected (e.g., duplicate resolution). Clients cannot release holds manually.
 
 ### 11.3 Available Balance Computation
 
 ```
-active_holds      = SUM(hold_amount) for events WHERE hold_expires_at_unix_ms > now_ms
-                                                  AND bucket = b AND account = a
+effective_hold(event) =
+  event.hold_amount
+  IF event.type = standard
+     AND event.amount < 0
+     AND event.hold_expires_at_unix_ms > now_ms
+     AND no hold_release event exists with void_ref = event.event_id
+  ELSE 0
+
+active_holds      = SUM(effective_hold(event)) for events WHERE bucket = b AND account = a
 available_balance = balance - active_holds
 ```
+
+If multiple `hold_release` events reference the same held debit, the release is treated as boolean existence, not additive subtraction.
 
 The overdraft guard (§9.1) checks against `available_balance`:
 ```
@@ -606,11 +609,11 @@ Nodes MAY use different hold configurations based on regional traffic patterns.
 
 ### 11.5 Interaction with Holds from Other Nodes
 
-When a node receives a replicated event with hold metadata:
+When a node receives a replicated correction affecting holds:
 
-1. Add the hold to the in-memory Active Holds cache for the relevant `(bucket, account)`.
-2. The hold immediately reduces `available_balance` on this node.
-3. Subsequent local debit requests for this account will see the reduced available balance and may be rejected by the overdraft guard.
+1. A debit `standard` event with hold metadata adds a hold to the in-memory Active Holds cache for the relevant `(bucket, account)`.
+2. A `hold_release` event marks the referenced hold as released in the Released Holds cache.
+3. Subsequent local debit requests for this account see the updated `available_balance` and may be rejected or re-admitted accordingly.
 
 This is the mechanism by which one node's spending activity reduces available balance on other nodes without consensus.
 
@@ -619,7 +622,7 @@ This is the mechanism by which one node's spending activity reduces available ba
 - **Clock skew**: nodes with skewed clocks will disagree on whether a hold is active. For holds measured in minutes, clock skew of seconds is negligible.
 - **Stale holds**: if broadcast is delayed, a node may not know about a peer's holds until catch-up sync. During this window, the node's `available_balance` is higher than it should be.
 - **Over-reservation**: aggressive hold multipliers reduce available balance significantly, potentially rejecting legitimate debits. Tune `hold_multiplier` and `hold_duration_ms` based on actual traffic patterns.
-- **No early release**: if a user stops making requests, the held balance remains unavailable until expiry. This is a UX tradeoff for simplicity.
+- **Correction latency**: after a duplicate debit is detected, `available_balance` remains too low until the matching `hold_release` propagates.
 
 ## 12. Broadcast and Membership Layer
 
@@ -685,13 +688,14 @@ The node wraps foca with:
 5. Rebuild in-memory caches from database:
    - Balances: aggregate `SUM(amount) GROUP BY bucket, account`
    - Active holds: load unexpired holds from events
+   - Released holds: load referenced event IDs from `hold_release` events
    - Heads: compute contiguous heads from event sequences per `(origin, epoch)` for ALL origins in registry
-   - Origin-account mapping: `DISTINCT (origin_node_id, bucket, account)`
+   - Origin-account mapping: `DISTINCT (origin_node_id, origin_epoch, bucket, account)`
    - Idempotency cache: recent events with non-null nonces
 6. Join the SWIM cluster via bootstrap peers — begin failure detection and gossip
 7. Merge SWIM's live membership into the node registry
 8. Start background tasks (batch writer, orphan detector, catch-up sync)
-9. Start serving
+9. Enter a warming state. Accept protected client traffic only after readiness criteria are satisfied (§13.2).
 
 ### 13.2 New Node Joining
 
@@ -699,7 +703,7 @@ Same as 13.1, plus after step 8:
 - Receive full node registry from bootstrap peer via `POST /join`
 - Merge received registry into local database (covers historical origins SWIM doesn't know about)
 - Run trustless bootstrap: pull ALL events from ALL origins in the registry, recompute state
-- **Readiness gate**: do not mark as healthy or accept client traffic until local heads are within a configurable threshold of peers' heads. This prevents a cold node from approving debits against a stale balance.
+- **Readiness gate**: do not mark as healthy or accept protected client traffic until local heads are within a configurable threshold of peers' heads. Protected traffic includes, at minimum, debits and any request with a non-null `idempotency_nonce`. This prevents a cold node from approving balance-sensitive or nonce-sensitive writes against stale state.
 
 ### 13.3 Graceful Shutdown
 
@@ -712,7 +716,7 @@ Same as 13.1, plus after step 8:
 
 On restart after a crash:
 - Events in the batch writer buffer (not yet flushed) are lost from THIS node's database.
-- Those events were broadcast to peers before the crash (broadcast happens before batch queue).
+- Those events may already have been broadcast to peers before the crash (broadcast happens immediately after enqueueing, before the next flush).
 - Peers' orphan detectors persist those events to their databases.
 - The lost events belong to the previous epoch. They will be synced back during catch-up.
 
@@ -722,9 +726,9 @@ On restart after a crash:
 1. Read own DB: get `current_epoch` → increment to `current_epoch + 1`, persist.
 2. Set `next_seq = 1` for the new epoch.
 3. Join SWIM cluster, begin catch-up sync (recovers unflushed events from prior epoch).
-4. Resume serving immediately — no need to wait for catch-up to complete before accepting writes, because the new epoch guarantees no sequence collision.
+4. Resume network participation immediately, but keep protected client writes disabled until catch-up / readiness completes. Implementations MAY accept non-idempotent credits earlier because they only increase balance and do not depend on prior nonce state.
 
-This is the primary advantage of the epoch mechanism: a crashed node can resume serving writes immediately without waiting for peer sync. Read consistency still requires catch-up (the node's balances may be stale until prior-epoch events are recovered), so the readiness gate (§13.2) still applies for accuracy-sensitive reads.
+This is the primary advantage of the epoch mechanism: a crashed node can resume replication immediately without waiting for peer sync, because the new epoch guarantees no sequence collision. It does NOT make debit admission or nonce-sensitive write admission safe on its own — those still depend on recovering prior-epoch balance, hold, and idempotency state, so the readiness gate (§13.2) applies to protected writes as well as accuracy-sensitive reads.
 
 ## 14. Node Registry and Peer Management
 
@@ -844,7 +848,8 @@ SWIM-specific parameters are in §12.6.
 | **Durability** | Events are durable once written to any node's database |
 | **Availability** | Any node can accept writes independently, even during partitions |
 | **Partition tolerance** | Nodes continue operating during network partitions; sync on reconnect |
-| **Immutability** | Events are never modified or deleted. Corrections are made by appending void events. |
+| **Immutability** | Events are never modified or deleted. Corrections are made by appending `void` and `hold_release` events. |
+| **Replay-safe local dedup** | Once a node has durably claimed `(origin_node_id, origin_epoch, origin_seq)`, it will not re-apply that event after restart or replay. |
 | **Commutative balance** | Balance = SUM(amount) over all events. Order of event arrival does not affect final balance. |
 
 This system provides AP (availability + partition tolerance) from the CAP theorem, sacrificing strong consistency for eventual consistency.
