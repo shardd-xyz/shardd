@@ -5,6 +5,7 @@
 //! - `InMemoryStorage` — for unit tests (task 0004)
 
 pub mod postgres;
+pub mod memory;
 
 use anyhow::Result;
 use std::collections::BTreeMap;
