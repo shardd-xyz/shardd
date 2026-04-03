@@ -21,18 +21,13 @@ pub type BalanceKey = (String, String);
 
 // ── Event type enum (§2.2) ───────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
+    #[default]
     Standard,
     Void,
     HoldRelease,
-}
-
-impl Default for EventType {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 impl std::fmt::Display for EventType {
