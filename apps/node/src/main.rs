@@ -1,3 +1,4 @@
+mod batch_writer;
 mod state;
 
 fn main() {
