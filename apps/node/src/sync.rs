@@ -39,7 +39,7 @@ pub async fn catchup_loop<S: StorageBackend>(state: SharedState<S>, interval_ms:
 }
 
 /// Pull missing events from a single peer via HTTP.
-async fn catchup_from_peer<S: StorageBackend>(
+pub async fn catchup_from_peer<S: StorageBackend>(
     state: &SharedState<S>,
     peer: &str,
 ) -> anyhow::Result<usize> {
@@ -161,4 +161,49 @@ pub async fn bootstrap_from_peers<S: StorageBackend>(
     }
 
     info!(events = total, "bootstrap complete");
+}
+
+/// §13.2: Join handshake — POST /join to a peer and get registry + heads.
+pub async fn join_peer(our_node_id: &str, our_addr: &str, peer: &str) -> anyhow::Result<shardd_types::JoinResponse> {
+    let client = reqwest::Client::new();
+    let resp = client.post(format!("http://{peer}/join"))
+        .json(&serde_json::json!({"node_id": our_node_id, "addr": our_addr}))
+        .timeout(Duration::from_secs(10))
+        .send().await?;
+    Ok(resp.json().await?)
+}
+
+/// §13.2: Compute maximum head lag behind peers.
+/// Returns the largest gap between local heads and any peer's heads.
+pub async fn compute_max_lag<S: StorageBackend>(
+    state: &SharedState<S>,
+    peers: &[String],
+) -> u64 {
+    let client = reqwest::Client::new();
+    let local_heads = state.get_heads();
+    let mut max_lag: u64 = 0;
+
+    for peer in peers {
+        let resp = match client.get(format!("http://{peer}/heads"))
+            .timeout(Duration::from_secs(5)).send().await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let peer_heads: BTreeMap<String, u64> = match resp.json().await {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+
+        for (key, &peer_head) in &peer_heads {
+            let local_head = local_heads.get(key).copied().unwrap_or(0);
+            if peer_head > local_head {
+                let lag = peer_head - local_head;
+                if lag > max_lag {
+                    max_lag = lag;
+                }
+            }
+        }
+    }
+
+    max_lag
 }

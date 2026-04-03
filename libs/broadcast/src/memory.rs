@@ -59,4 +59,8 @@ impl Broadcaster for InMemoryBroadcaster {
     async fn peer_count(&self) -> usize {
         self.peer_count.load(Ordering::Relaxed)
     }
+
+    async fn set_peers(&self, _peers: Vec<String>) {
+        // No-op for in-memory broadcaster
+    }
 }

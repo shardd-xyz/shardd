@@ -74,6 +74,9 @@ pub struct SharedState<S: shardd_storage::StorageBackend> {
 
     /// Node phase for readiness gate (§13.2).
     pub phase: Arc<std::sync::atomic::AtomicU8>,
+
+    /// Channel for correction events (voids/hold_releases) to be broadcast.
+    correction_tx: mpsc::UnboundedSender<Event>,
 }
 
 impl<S: shardd_storage::StorageBackend> SharedState<S> {
@@ -84,6 +87,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         current_epoch: u32,
         storage: S,
         batch_tx: mpsc::UnboundedSender<Event>,
+        correction_tx: mpsc::UnboundedSender<Event>,
         hold_multiplier: u64,
         hold_duration_ms: u64,
     ) -> Self {
@@ -176,6 +180,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             unpersisted: Arc::new(DashMap::new()),
             idempotency_cache: Arc::new(idempotency_cache),
             batch_tx,
+            correction_tx,
             total_event_count: Arc::new(AtomicUsize::new(total_events)),
             hold_multiplier,
             hold_duration_ms,
@@ -490,6 +495,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         }
 
         let _ = self.batch_tx.send(event.clone());
+        // §4.1: Broadcast correction events to peers
+        let _ = self.correction_tx.send(event.clone());
     }
 
     /// Insert a batch of events. Returns count of newly inserted.
@@ -744,7 +751,8 @@ mod tests {
         }).await.unwrap();
 
         let (tx, _rx) = mpsc::unbounded_channel();
-        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 0, 0).await
+        let (ctx, _crx) = mpsc::unbounded_channel();
+        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, ctx, 0, 0).await
     }
 
     async fn make_state_with_holds() -> SharedState<InMemoryStorage> {
@@ -755,8 +763,9 @@ mod tests {
         }).await.unwrap();
 
         let (tx, _rx) = mpsc::unbounded_channel();
+        let (ctx, _crx) = mpsc::unbounded_channel();
         // hold_multiplier=5, hold_duration=600000ms (10 min)
-        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 5, 600_000).await
+        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, ctx, 5, 600_000).await
     }
 
     #[tokio::test]
@@ -953,7 +962,8 @@ mod tests {
 
         // Create state — idempotency cache is empty (not rebuilt from DB)
         let (tx, _rx) = mpsc::unbounded_channel();
-        let state = SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 0, 0).await;
+        let (ctx, _crx) = mpsc::unbounded_channel();
+        let state = SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, ctx, 0, 0).await;
 
         // Fund the account so overdraft doesn't reject
         state.create_local_event("b".into(), "a".into(), 1000, None, 0, None).await.unwrap();

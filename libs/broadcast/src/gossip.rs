@@ -248,4 +248,8 @@ impl Broadcaster for GossipBroadcaster {
     async fn peer_count(&self) -> usize {
         self.member_count.load(Ordering::Relaxed)
     }
+
+    async fn set_peers(&self, _peers: Vec<String>) {
+        // Gossip discovers peers via SWIM — peer list managed internally
+    }
 }

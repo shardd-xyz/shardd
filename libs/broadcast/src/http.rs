@@ -78,4 +78,8 @@ impl Broadcaster for HttpBroadcaster {
     async fn peer_count(&self) -> usize {
         self.peers.lock().await.len()
     }
+
+    async fn set_peers(&self, peers: Vec<String>) {
+        *self.peers.lock().await = peers;
+    }
 }

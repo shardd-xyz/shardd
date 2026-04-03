@@ -1,17 +1,40 @@
 //! HTTP API per protocol.md v1.7 §7.
 
-use axum::extract::{Path, State};
+use std::sync::Arc;
+
+use axum::extract::{FromRef, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use tracing::info;
 
+use shardd_broadcast::Broadcaster;
 use shardd_storage::StorageBackend;
 use shardd_types::*;
 
 use crate::state::SharedState;
+use crate::NodePhase;
 
-type AppState<S> = SharedState<S>;
+// ── Composite app state ─────────────────────────────────────────────
+
+/// Composite state holding SharedState + Broadcaster for axum handlers.
+#[derive(Clone)]
+pub struct AppState<S: StorageBackend> {
+    pub shared: SharedState<S>,
+    pub broadcaster: Arc<dyn Broadcaster>,
+}
+
+impl<S: StorageBackend + Clone> FromRef<AppState<S>> for SharedState<S> {
+    fn from_ref(app: &AppState<S>) -> Self {
+        app.shared.clone()
+    }
+}
+
+impl<S: StorageBackend + Clone> FromRef<AppState<S>> for Arc<dyn Broadcaster> {
+    fn from_ref(app: &AppState<S>) -> Self {
+        app.broadcaster.clone()
+    }
+}
 
 // ── Error response ───────────────────────────────────────────────────
 
@@ -26,9 +49,32 @@ impl IntoResponse for AppError {
 // ── POST /events (§7.1) ─────────────────────────────────────────────
 
 pub async fn create_event<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(app): State<AppState<S>>,
     Json(req): Json<CreateEventRequest>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+) -> Result<impl IntoResponse, axum::response::Response> {
+    let state = &app.shared;
+
+    // §13.2: Readiness gate — reject protected traffic when not Ready
+    let phase = NodePhase::from_u8(state.phase.load(std::sync::atomic::Ordering::Relaxed));
+    match phase {
+        NodePhase::ShuttingDown => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "node shutting down"})),
+            ).into_response());
+        }
+        NodePhase::Warming => {
+            let is_protected = req.amount < 0 || req.idempotency_nonce.is_some();
+            if is_protected {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "node warming up"})),
+                ).into_response());
+            }
+        }
+        NodePhase::Ready => {}
+    }
+
     let max_overdraft = req.max_overdraft.unwrap_or(0);
 
     // §10.3: Check idempotency — if deduplicated, return 200 not 201
@@ -55,13 +101,19 @@ pub async fn create_event<S: StorageBackend>(
 
             let status = if deduplicated { StatusCode::OK } else { StatusCode::CREATED };
 
-            if !deduplicated {
+            // §4.1 + §12.3: Broadcast event to peers (with optional quorum acks)
+            let acks = if !deduplicated {
+                let min_acks = req.min_acks.unwrap_or(0);
+                let ack_timeout = req.ack_timeout_ms.unwrap_or(500);
                 info!(
                     event_id = %event.event_id, seq = event.origin_seq,
                     bucket = %event.bucket, account = %event.account, amount = event.amount,
                     "event created"
                 );
-            }
+                app.broadcaster.broadcast_event(&event, min_acks, ack_timeout).await
+            } else {
+                AckInfo::fire_and_forget()
+            };
 
             Ok((
                 status,
@@ -70,7 +122,7 @@ pub async fn create_event<S: StorageBackend>(
                     balance,
                     available_balance: available,
                     deduplicated,
-                    acks: AckInfo::fire_and_forget(),
+                    acks,
                 }),
             ))
         }
@@ -85,7 +137,7 @@ pub async fn create_event<S: StorageBackend>(
                     projected_available_balance: projected,
                     limit,
                 }),
-            ))
+            ).into_response())
         }
     }
 }
@@ -93,7 +145,7 @@ pub async fn create_event<S: StorageBackend>(
 // ── POST /events/replicate (§7.2) ───────────────────────────────────
 
 pub async fn replicate_event<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
     Json(event): Json<Event>,
 ) -> Json<ReplicateResponse> {
     let inserted = state.insert_event(&event).await;
@@ -103,7 +155,7 @@ pub async fn replicate_event<S: StorageBackend>(
 // ── GET /events (§7.1) ──────────────────────────────────────────────
 
 pub async fn list_events<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<serde_json::Value> {
     let events = state.storage.query_all_events_sorted().await.unwrap_or_default();
     Json(serde_json::json!({"events": events}))
@@ -112,7 +164,7 @@ pub async fn list_events<S: StorageBackend>(
 // ── GET /heads (§7.1) ───────────────────────────────────────────────
 
 pub async fn get_heads<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<std::collections::BTreeMap<String, u64>> {
     Json(state.get_heads())
 }
@@ -120,7 +172,7 @@ pub async fn get_heads<S: StorageBackend>(
 // ── POST /events/range (§7.2) ───────────────────────────────────────
 
 pub async fn events_range<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
     Json(req): Json<RangeRequest>,
 ) -> Json<Vec<Event>> {
     // Check event_buffer first, then storage
@@ -141,7 +193,7 @@ pub async fn events_range<S: StorageBackend>(
 // ── GET /health (§7.1) ──────────────────────────────────────────────
 
 pub async fn health<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<HealthResponse> {
     let ready = state.phase.load(std::sync::atomic::Ordering::Relaxed) == 1; // 1 = Ready
     Json(HealthResponse {
@@ -149,7 +201,7 @@ pub async fn health<S: StorageBackend>(
         addr: state.addr.to_string(),
         current_epoch: state.current_epoch,
         ready,
-        peer_count: 0, // TODO: from broadcaster
+        peer_count: 0,
         event_count: state.event_count(),
         total_balance: state.total_balance(),
     })
@@ -158,7 +210,7 @@ pub async fn health<S: StorageBackend>(
 // ── GET /state (§7.1) ───────────────────────────────────────────────
 
 pub async fn get_state<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<StateResponse> {
     let ready = state.phase.load(std::sync::atomic::Ordering::Relaxed) == 1;
     Json(StateResponse {
@@ -178,7 +230,7 @@ pub async fn get_state<S: StorageBackend>(
 // ── GET /balances (§7.1) ────────────────────────────────────────────
 
 pub async fn get_balances<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<BalancesResponse> {
     Json(BalancesResponse {
         total_balance: state.total_balance(),
@@ -189,13 +241,13 @@ pub async fn get_balances<S: StorageBackend>(
 // ── GET /collapsed (§7.1) ───────────────────────────────────────────
 
 pub async fn get_collapsed<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<std::collections::BTreeMap<String, CollapsedBalance>> {
     Json(state.collapsed_state())
 }
 
 pub async fn get_collapsed_account<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
     Path((bucket, account)): Path<(String, String)>,
 ) -> Json<CollapsedBalance> {
     let collapsed = state.collapsed_state();
@@ -209,7 +261,7 @@ pub async fn get_collapsed_account<S: StorageBackend>(
 // ── GET /persistence (§7.1) ─────────────────────────────────────────
 
 pub async fn get_persistence<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<PersistenceStats> {
     Json(state.persistence_stats())
 }
@@ -217,7 +269,7 @@ pub async fn get_persistence<S: StorageBackend>(
 // ── POST /join (§7.2) ───────────────────────────────────────────────
 
 pub async fn join<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
     Json(req): Json<JoinRequest>,
 ) -> Json<JoinResponse> {
     // §7.2: Register the joining node in our registry
@@ -243,7 +295,7 @@ pub async fn join<S: StorageBackend>(
 // ── GET /registry (§7.2) ────────────────────────────────────────────
 
 pub async fn get_registry<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
 ) -> Json<Vec<NodeRegistryEntry>> {
     Json(state.storage.load_registry().await.unwrap_or_default())
 }
@@ -256,7 +308,7 @@ pub struct DecommissionRequest {
 }
 
 pub async fn decommission<S: StorageBackend>(
-    State(state): State<AppState<S>>,
+    State(state): State<SharedState<S>>,
     Json(req): Json<DecommissionRequest>,
 ) -> Json<serde_json::Value> {
     let _ = state.storage.decommission_node(&req.node_id).await;

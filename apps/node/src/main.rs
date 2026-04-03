@@ -13,6 +13,8 @@ use clap::Parser;
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
+use shardd_broadcast::http::HttpBroadcaster;
+use shardd_broadcast::Broadcaster;
 use shardd_storage::postgres::PostgresStorage;
 use shardd_storage::StorageBackend;
 use shardd_types::NodeMeta;
@@ -135,12 +137,16 @@ async fn main() -> anyhow::Result<()> {
 
     // §13.1 steps 4-5: Build state
     let (batch_tx, batch_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (correction_tx, mut correction_rx) = tokio::sync::mpsc::unbounded_channel();
     let shared = state::SharedState::new(
         node_id.clone(), advertise_addr.clone(), current_epoch,
-        (*storage).clone(), batch_tx,
+        (*storage).clone(), batch_tx, correction_tx,
         cli.hold_multiplier, cli.hold_duration_ms,
     ).await;
     info!(events = shared.event_count(), "state rebuilt from database");
+
+    // §4.1: Create broadcaster (empty peers initially, updated after bootstrap/join)
+    let broadcaster: Arc<dyn Broadcaster> = Arc::new(HttpBroadcaster::new(vec![]));
 
     // §13.1 step 8: Background tasks with JoinSet supervision
     let mut tasks = JoinSet::new();
@@ -178,6 +184,14 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // §4.1: Correction event broadcaster (voids/hold_releases from idempotency conflicts)
+    let correction_broadcaster = broadcaster.clone();
+    tasks.spawn(async move {
+        while let Some(event) = correction_rx.recv().await {
+            correction_broadcaster.broadcast_event(&event, 0, 0).await;
+        }
+    });
+
     // §13.2: Register self in registry
     let now_ms = shardd_types::Event::now_ms();
     let _ = storage.upsert_registry_entry(&shardd_types::NodeRegistryEntry {
@@ -188,14 +202,74 @@ async fn main() -> anyhow::Result<()> {
         status: shardd_types::NodeStatus::Active,
     }).await;
 
+    // §4.3 + §13.2: Bootstrap from peers if configured
+    if !cli.bootstrap.is_empty() {
+        info!(peers = cli.bootstrap.len(), "starting bootstrap from peers");
+
+        // §13.2: Join handshake — exchange registries with bootstrap peers
+        for peer in &cli.bootstrap {
+            match sync::join_peer(&node_id, &advertise_addr, peer).await {
+                Ok(resp) => {
+                    for entry in &resp.registry {
+                        let _ = storage.upsert_registry_entry(entry).await;
+                    }
+                    info!(peer, remote_node = %resp.node_id, "join handshake complete");
+                }
+                Err(e) => warn!(peer, error = %e, "join handshake failed"),
+            }
+        }
+
+        // Update broadcaster peer list from registry
+        let registry = storage.load_registry().await.unwrap_or_default();
+        let peer_addrs: Vec<String> = registry.iter()
+            .filter(|e| e.status == shardd_types::NodeStatus::Active || e.status == shardd_types::NodeStatus::Suspect)
+            .filter(|e| e.addr != advertise_addr)
+            .map(|e| e.addr.clone())
+            .collect();
+        broadcaster.set_peers(peer_addrs).await;
+
+        // §4.3: Trustless bootstrap — pull ALL events from ALL origins
+        sync::bootstrap_from_peers(&shared, &cli.bootstrap).await;
+
+        // §13.2: Readiness gate — wait until head lag is within threshold
+        let readiness_lag = cli.readiness_head_lag;
+        loop {
+            let max_lag = sync::compute_max_lag(&shared, &cli.bootstrap).await;
+            if max_lag <= readiness_lag {
+                info!(max_lag, threshold = readiness_lag, "head lag within threshold");
+                break;
+            }
+            info!(max_lag, threshold = readiness_lag, "still catching up...");
+            // Run one catch-up cycle
+            for peer in &cli.bootstrap {
+                let _ = sync::catchup_from_peer(&shared, peer).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    } else {
+        // No bootstrap peers — update broadcaster from any existing registry
+        let registry = storage.load_registry().await.unwrap_or_default();
+        let peer_addrs: Vec<String> = registry.iter()
+            .filter(|e| e.status == shardd_types::NodeStatus::Active || e.status == shardd_types::NodeStatus::Suspect)
+            .filter(|e| e.addr != advertise_addr)
+            .map(|e| e.addr.clone())
+            .collect();
+        broadcaster.set_peers(peer_addrs).await;
+    }
+
     // §13.2: Mark ready
-    shared.phase.store(1, std::sync::atomic::Ordering::Relaxed); // 1 = Ready
+    shared.phase.store(1, Ordering::Relaxed); // 1 = Ready
     info!("node ready");
 
     // Clone phase before shared is moved into router
     let shutdown_phase = shared.phase.clone();
 
-    // Build router
+    // Build router with composite AppState
+    let app_state = api::AppState {
+        shared,
+        broadcaster,
+    };
+
     let cors = tower_http::cors::CorsLayer::permissive();
     let app = Router::new()
         .route("/health", get(api::health::<PostgresStorage>))
@@ -212,7 +286,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/registry", get(api::get_registry::<PostgresStorage>))
         .route("/registry/decommission", post(api::decommission::<PostgresStorage>))
         .layer(cors)
-        .with_state(shared);
+        .with_state(app_state);
 
     info!(listen = %listen_addr, advertise = %advertise_addr, epoch = current_epoch, "starting shardd-node v2");
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
@@ -221,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_signal = async move {
         tokio::signal::ctrl_c().await.ok();
         info!("shutdown signal received");
-        shutdown_phase.store(2, std::sync::atomic::Ordering::Relaxed); // 2 = ShuttingDown
+        shutdown_phase.store(2, Ordering::Relaxed); // 2 = ShuttingDown
     };
 
     // Serve with graceful shutdown
