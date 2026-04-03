@@ -187,10 +187,28 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         let mut state = acct.lock().await;
 
         // Step 1: Idempotency check (§10.3)
+        // Check in-memory cache first, then DB fallback.
         if let Some(ref nonce) = idempotency_nonce {
             let idem_key = (nonce.clone(), bucket.clone(), account.clone(), amount);
+
+            // In-memory cache hit
             if let Some(existing) = self.idempotency_cache.get(&idem_key) {
                 return Ok(existing.value().clone()); // deduplicated
+            }
+
+            // DB fallback (§10.3 step 2): cache may have been evicted after restart
+            if let Ok(matches) = self.storage.find_by_idempotency_key(nonce, &bucket, &account, amount).await {
+                if !matches.is_empty() {
+                    // Determine canonical winner per §10.4
+                    let winner = matches.iter().min_by(|a, b| {
+                        a.created_at_unix_ms.cmp(&b.created_at_unix_ms)
+                            .then_with(|| a.event_id.cmp(&b.event_id))
+                    }).unwrap().clone();
+
+                    // Re-populate cache for future fast lookups
+                    self.idempotency_cache.insert(idem_key, winner.clone());
+                    return Ok(winner); // deduplicated
+                }
             }
         }
 
@@ -710,5 +728,63 @@ mod tests {
         assert_eq!(state.persistence_stats().unpersisted, 1);
         state.mark_persisted(&[("n1".into(), 1, 1)]);
         assert_eq!(state.persistence_stats().unpersisted, 0);
+    }
+
+    #[tokio::test]
+    async fn idempotency_db_fallback_after_cache_miss() {
+        // Create a state, insert event with nonce, then manually write it to storage
+        // and clear the in-memory cache to simulate a restart scenario
+        let storage = InMemoryStorage::new();
+        storage.save_node_meta(&NodeMeta {
+            node_id: "test-node".into(), host: "127.0.0.1".into(), port: 0,
+            current_epoch: 1, next_seq: 1,
+        }).await.unwrap();
+
+        // Pre-insert an event with a nonce directly into storage (simulating prior run)
+        let prior_event = Event {
+            event_id: "prior-event-123".into(),
+            origin_node_id: "test-node".into(),
+            origin_epoch: 1,
+            origin_seq: 1,
+            created_at_unix_ms: 1000,
+            r#type: EventType::Standard,
+            bucket: "b".into(),
+            account: "a".into(),
+            amount: -50,
+            note: None,
+            idempotency_nonce: Some("nonce-db-test".into()),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+        storage.insert_event(&prior_event).await.unwrap();
+
+        // Create state — idempotency cache is empty (not rebuilt from DB)
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let state = SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx).await;
+
+        // Fund the account so overdraft doesn't reject
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+
+        // Now try to create with the same nonce — should hit DB fallback and dedup
+        let result = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce-db-test".into()), 0, 0).await.unwrap();
+
+        // Should return the prior event (dedup from DB)
+        assert_eq!(result.event_id, "prior-event-123");
+        // Balance should NOT have been charged again
+        assert_eq!(state.account_balance("b", "a"), 950); // 1000 - 50 from rebuild, not -50 again
+    }
+
+    #[tokio::test]
+    async fn idempotency_different_amount_same_nonce_not_dedup() {
+        let state = make_state().await;
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+
+        let e1 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
+        let e2 = state.create_local_event("b".into(), "a".into(), -100, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
+
+        // Different amounts = different operations, not duplicates
+        assert_ne!(e1.event_id, e2.event_id);
+        assert_eq!(state.account_balance("b", "a"), 850); // 1000 - 50 - 100
     }
 }
