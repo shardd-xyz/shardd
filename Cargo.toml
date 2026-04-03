@@ -3,12 +3,12 @@ resolver = "2"
 members = [
     "apps/node",
     "apps/cli",
-    "apps/dashboard",
     "apps/bench",
     "libs/types",
     "libs/storage",
     "libs/broadcast",
 ]
+# Dashboard excluded from v2 rewrite (Dioxus WASM, separate effort)
 
 [workspace.package]
 edition = "2024"
