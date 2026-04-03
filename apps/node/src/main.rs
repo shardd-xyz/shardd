@@ -76,6 +76,16 @@ struct Cli {
     orphan_age_ms: u64,
     #[arg(long, default_value = "30000")]
     catchup_interval_ms: u64,
+    #[arg(long, default_value = "16")]
+    max_peers: usize,
+    #[arg(long, default_value = "4")]
+    sync_fetch_concurrency: usize,
+    #[arg(long, default_value = "10")]
+    hold_multiplier: u64,
+    #[arg(long, default_value = "600000")]
+    hold_duration_ms: u64,
+    #[arg(long, default_value = "100")]
+    readiness_head_lag: u64,
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -123,14 +133,12 @@ async fn main() -> anyhow::Result<()> {
     let current_epoch = storage.increment_epoch(&node_id).await?;
     info!(epoch = current_epoch, "epoch incremented");
 
-    // Node phase: start in Warming
-    let phase: PhaseRef = Arc::new(AtomicU8::new(NodePhase::Warming as u8));
-
     // §13.1 steps 4-5: Build state
     let (batch_tx, batch_rx) = tokio::sync::mpsc::unbounded_channel();
     let shared = state::SharedState::new(
         node_id.clone(), advertise_addr.clone(), current_epoch,
         (*storage).clone(), batch_tx,
+        cli.hold_multiplier, cli.hold_duration_ms,
     ).await;
     info!(events = shared.event_count(), "state rebuilt from database");
 
@@ -159,9 +167,33 @@ async fn main() -> anyhow::Result<()> {
         sync::catchup_loop(sync_state, catchup_ms).await;
     });
 
-    // §13.2: Mark ready (in production, check head lag first)
-    set_phase(&phase, NodePhase::Ready);
+    // §5.3: Hold expiry sweep (every 10s)
+    let sweep_state = shared.clone();
+    tasks.spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            sweep_state.sweep_expired_holds().await;
+        }
+    });
+
+    // §13.2: Register self in registry
+    let now_ms = shardd_types::Event::now_ms();
+    let _ = storage.upsert_registry_entry(&shardd_types::NodeRegistryEntry {
+        node_id: node_id.clone(),
+        addr: advertise_addr.clone(),
+        first_seen_at_unix_ms: now_ms,
+        last_seen_at_unix_ms: now_ms,
+        status: shardd_types::NodeStatus::Active,
+    }).await;
+
+    // §13.2: Mark ready
+    shared.phase.store(1, std::sync::atomic::Ordering::Relaxed); // 1 = Ready
     info!("node ready");
+
+    // Clone phase before shared is moved into router
+    let shutdown_phase = shared.phase.clone();
 
     // Build router
     let cors = tower_http::cors::CorsLayer::permissive();
@@ -178,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/persistence", get(api::get_persistence::<PostgresStorage>))
         .route("/join", post(api::join::<PostgresStorage>))
         .route("/registry", get(api::get_registry::<PostgresStorage>))
+        .route("/registry/decommission", post(api::decommission::<PostgresStorage>))
         .layer(cors)
         .with_state(shared);
 
@@ -185,11 +218,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
 
     // Graceful shutdown: Ctrl+C → drain → flush → exit
-    let shutdown_phase = phase.clone();
     let shutdown_signal = async move {
         tokio::signal::ctrl_c().await.ok();
         info!("shutdown signal received");
-        set_phase(&shutdown_phase, NodePhase::ShuttingDown);
+        shutdown_phase.store(2, std::sync::atomic::Ordering::Relaxed); // 2 = ShuttingDown
     };
 
     // Serve with graceful shutdown

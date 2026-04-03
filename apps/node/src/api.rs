@@ -30,9 +30,8 @@ pub async fn create_event<S: StorageBackend>(
     Json(req): Json<CreateEventRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let max_overdraft = req.max_overdraft.unwrap_or(0);
-    let hold_amount = 0u64; // Hold configuration from node config (task 0012)
-    let hold_expires = 0u64;
 
+    // §10.3: Check idempotency — if deduplicated, return 200 not 201
     match state
         .create_local_event(
             req.bucket.clone(),
@@ -40,30 +39,38 @@ pub async fn create_event<S: StorageBackend>(
             req.amount,
             req.note,
             max_overdraft,
-            req.idempotency_nonce,
-            hold_amount,
-            hold_expires,
+            req.idempotency_nonce.clone(),
         )
         .await
     {
         Ok(event) => {
             let balance = state.account_balance(&event.bucket, &event.account);
             let available = state.account_available_balance(&event.bucket, &event.account);
+            // §7.1: deduplicated = true if event was returned from cache (not newly created)
+            let deduplicated = req.idempotency_nonce.is_some()
+                && event.origin_node_id != state.node_id.as_ref();
+            // A more accurate check: if the event's seq < our next_seq, it's from cache
+            let deduplicated = deduplicated || (req.idempotency_nonce.is_some()
+                && event.origin_seq < state.next_seq.load(std::sync::atomic::Ordering::Relaxed));
 
-            info!(
-                event_id = %event.event_id, seq = event.origin_seq,
-                bucket = %event.bucket, account = %event.account, amount = event.amount,
-                "event created"
-            );
+            let status = if deduplicated { StatusCode::OK } else { StatusCode::CREATED };
+
+            if !deduplicated {
+                info!(
+                    event_id = %event.event_id, seq = event.origin_seq,
+                    bucket = %event.bucket, account = %event.account, amount = event.amount,
+                    "event created"
+                );
+            }
 
             Ok((
-                StatusCode::CREATED,
+                status,
                 Json(CreateEventResponse {
                     event,
                     balance,
                     available_balance: available,
-                    deduplicated: false,
-                    acks: AckInfo::fire_and_forget(), // Acks handled by broadcaster (task 0014)
+                    deduplicated,
+                    acks: AckInfo::fire_and_forget(),
                 }),
             ))
         }
@@ -136,12 +143,13 @@ pub async fn events_range<S: StorageBackend>(
 pub async fn health<S: StorageBackend>(
     State(state): State<AppState<S>>,
 ) -> Json<HealthResponse> {
+    let ready = state.phase.load(std::sync::atomic::Ordering::Relaxed) == 1; // 1 = Ready
     Json(HealthResponse {
         node_id: state.node_id.to_string(),
         addr: state.addr.to_string(),
         current_epoch: state.current_epoch,
-        ready: true, // Readiness gate in task 0019
-        peer_count: 0, // Peers from broadcaster (task 0014)
+        ready,
+        peer_count: 0, // TODO: from broadcaster
         event_count: state.event_count(),
         total_balance: state.total_balance(),
     })
@@ -152,12 +160,13 @@ pub async fn health<S: StorageBackend>(
 pub async fn get_state<S: StorageBackend>(
     State(state): State<AppState<S>>,
 ) -> Json<StateResponse> {
+    let ready = state.phase.load(std::sync::atomic::Ordering::Relaxed) == 1;
     Json(StateResponse {
         node_id: state.node_id.to_string(),
         addr: state.addr.to_string(),
         current_epoch: state.current_epoch,
         next_seq: state.next_seq.load(std::sync::atomic::Ordering::Relaxed),
-        ready: true,
+        ready,
         peers: vec![],
         event_count: state.event_count(),
         total_balance: state.total_balance(),
@@ -209,12 +218,24 @@ pub async fn get_persistence<S: StorageBackend>(
 
 pub async fn join<S: StorageBackend>(
     State(state): State<AppState<S>>,
-    Json(_req): Json<JoinRequest>,
+    Json(req): Json<JoinRequest>,
 ) -> Json<JoinResponse> {
+    // §7.2: Register the joining node in our registry
+    let now_ms = shardd_types::Event::now_ms();
+    let _ = state.storage.upsert_registry_entry(&NodeRegistryEntry {
+        node_id: req.node_id.clone(),
+        addr: req.addr.clone(),
+        first_seen_at_unix_ms: now_ms,
+        last_seen_at_unix_ms: now_ms,
+        status: shardd_types::NodeStatus::Active,
+    }).await;
+
+    // §7.2: Return full registry + heads
+    let registry = state.storage.load_registry().await.unwrap_or_default();
     Json(JoinResponse {
         node_id: state.node_id.to_string(),
         addr: state.addr.to_string(),
-        registry: vec![], // Registry from task 0017
+        registry,
         heads: state.get_heads(),
     })
 }
@@ -225,6 +246,21 @@ pub async fn get_registry<S: StorageBackend>(
     State(state): State<AppState<S>>,
 ) -> Json<Vec<NodeRegistryEntry>> {
     Json(state.storage.load_registry().await.unwrap_or_default())
+}
+
+// ── POST /registry/decommission (§7.2) ──────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct DecommissionRequest {
+    pub node_id: String,
+}
+
+pub async fn decommission<S: StorageBackend>(
+    State(state): State<AppState<S>>,
+    Json(req): Json<DecommissionRequest>,
+) -> Json<serde_json::Value> {
+    let _ = state.storage.decommission_node(&req.node_id).await;
+    Json(serde_json::json!({"status": "decommissioned", "node_id": req.node_id}))
 }
 
 // ── Match all for 404 ───────────────────────────────────────────────

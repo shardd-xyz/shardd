@@ -20,9 +20,13 @@ pub async fn catchup_loop<S: StorageBackend>(state: SharedState<S>, interval_ms:
     loop {
         interval.tick().await;
 
-        // Get peers from registry or bootstrap list
-        // For now, use a simple peer list (will be enhanced with registry in production)
-        let peers: Vec<String> = vec![]; // TODO: get from registry/SWIM
+        // Get peers from registry (§4.2 step 1)
+        let registry = state.storage.load_registry().await.unwrap_or_default();
+        let peers: Vec<String> = registry.iter()
+            .filter(|e| e.status == shardd_types::NodeStatus::Active || e.status == shardd_types::NodeStatus::Suspect)
+            .filter(|e| e.addr != state.addr.as_ref())
+            .map(|e| e.addr.clone())
+            .collect();
 
         for peer in &peers {
             match catchup_from_peer(&state, peer).await {
@@ -42,7 +46,18 @@ async fn catchup_from_peer<S: StorageBackend>(
     let client = reqwest::Client::new();
     let base = format!("http://{peer}");
 
-    // Fetch peer's heads (epoch-aware)
+    // §4.2 step 2: Exchange registries
+    if let Ok(resp) = client.get(format!("{base}/registry"))
+        .timeout(Duration::from_secs(5)).send().await
+    {
+        if let Ok(remote_registry) = resp.json::<Vec<shardd_types::NodeRegistryEntry>>().await {
+            for entry in &remote_registry {
+                let _ = state.storage.upsert_registry_entry(entry).await;
+            }
+        }
+    }
+
+    // §4.2 step 3: Fetch peer's heads (epoch-aware)
     let resp = client.get(format!("{base}/heads"))
         .timeout(Duration::from_secs(5)).send().await?;
     let peer_heads: BTreeMap<String, u64> = resp.json().await?;

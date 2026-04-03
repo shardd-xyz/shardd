@@ -67,6 +67,13 @@ pub struct SharedState<S: shardd_storage::StorageBackend> {
     pub batch_tx: mpsc::UnboundedSender<Event>,
 
     pub total_event_count: Arc<AtomicUsize>,
+
+    /// Hold configuration (§11.4).
+    pub hold_multiplier: u64,
+    pub hold_duration_ms: u64,
+
+    /// Node phase for readiness gate (§13.2).
+    pub phase: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl<S: shardd_storage::StorageBackend> SharedState<S> {
@@ -77,6 +84,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         current_epoch: u32,
         storage: S,
         batch_tx: mpsc::UnboundedSender<Event>,
+        hold_multiplier: u64,
+        hold_duration_ms: u64,
     ) -> Self {
         let storage = Arc::new(storage);
         let accounts: DashMap<BalanceKey, Arc<Mutex<AccountState>>> = DashMap::new();
@@ -139,8 +148,16 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             }
         }
 
-        // Rebuild idempotency cache from recent nonce events
-        // (Bounded LRU in production; for now load all from DB)
+        // §10.3: Rebuild idempotency cache from recent nonce events in DB
+        let idempotency_cache: DashMap<(String, String, String, i64), Event> = DashMap::new();
+        if let Ok(all_events) = storage.query_all_events_sorted().await {
+            for event in all_events.iter().rev().take(10000) { // last 10K events
+                if let Some(ref nonce) = event.idempotency_nonce {
+                    let key = (nonce.clone(), event.bucket.clone(), event.account.clone(), event.amount);
+                    idempotency_cache.entry(key).or_insert_with(|| event.clone());
+                }
+            }
+        }
 
         let next_seq = storage.derive_next_seq(&node_id, current_epoch).await.unwrap_or(1);
 
@@ -157,9 +174,12 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             max_known_seqs: Arc::new(max_known_seqs),
             event_buffer: Arc::new(DashMap::new()),
             unpersisted: Arc::new(DashMap::new()),
-            idempotency_cache: Arc::new(DashMap::new()),
+            idempotency_cache: Arc::new(idempotency_cache),
             batch_tx,
             total_event_count: Arc::new(AtomicUsize::new(total_events)),
+            hold_multiplier,
+            hold_duration_ms,
+            phase: Arc::new(std::sync::atomic::AtomicU8::new(0)), // 0 = Warming
         }
     }
 
@@ -175,9 +195,15 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         note: Option<String>,
         max_overdraft: u64,
         idempotency_nonce: Option<String>,
-        hold_amount: u64,
-        hold_expires_at_unix_ms: u64,
     ) -> Result<Event, (i64, i64, i64)> {
+        // §11.4: Compute hold metadata for debits
+        let (hold_amount, hold_expires_at_unix_ms) = if amount < 0 && self.hold_multiplier > 0 {
+            let ha = (amount.unsigned_abs()) * self.hold_multiplier;
+            let exp = Event::now_ms() + self.hold_duration_ms;
+            (ha, exp)
+        } else {
+            (0, 0)
+        };
         let key = (bucket.clone(), account.clone());
         let acct = self.accounts.entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(AccountState::new())))
@@ -718,14 +744,26 @@ mod tests {
         }).await.unwrap();
 
         let (tx, _rx) = mpsc::unbounded_channel();
-        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx).await
+        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 0, 0).await
+    }
+
+    async fn make_state_with_holds() -> SharedState<InMemoryStorage> {
+        let storage = InMemoryStorage::new();
+        storage.save_node_meta(&NodeMeta {
+            node_id: "test-node".into(), host: "127.0.0.1".into(), port: 0,
+            current_epoch: 1, next_seq: 1,
+        }).await.unwrap();
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // hold_multiplier=5, hold_duration=600000ms (10 min)
+        SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 5, 600_000).await
     }
 
     #[tokio::test]
     async fn create_event_increments_seq() {
         let state = make_state().await;
-        let e1 = state.create_local_event("b".into(), "a".into(), 100, None, 0, None, 0, 0).await.unwrap();
-        let e2 = state.create_local_event("b".into(), "a".into(), 50, None, 0, None, 0, 0).await.unwrap();
+        let e1 = state.create_local_event("b".into(), "a".into(), 100, None, 0, None).await.unwrap();
+        let e2 = state.create_local_event("b".into(), "a".into(), 50, None, 0, None).await.unwrap();
         assert_eq!(e1.origin_seq, 1);
         assert_eq!(e2.origin_seq, 2);
         assert_eq!(e1.origin_epoch, 1);
@@ -734,8 +772,8 @@ mod tests {
     #[tokio::test]
     async fn overdraft_guard_rejects() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 100, None, 0, None, 0, 0).await.unwrap();
-        let result = state.create_local_event("b".into(), "a".into(), -200, None, 0, None, 0, 0).await;
+        state.create_local_event("b".into(), "a".into(), 100, None, 0, None).await.unwrap();
+        let result = state.create_local_event("b".into(), "a".into(), -200, None, 0, None).await;
         assert!(result.is_err());
         assert_eq!(state.account_balance("b", "a"), 100); // unchanged
     }
@@ -743,8 +781,8 @@ mod tests {
     #[tokio::test]
     async fn overdraft_guard_with_limit() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 100, None, 0, None, 0, 0).await.unwrap();
-        let result = state.create_local_event("b".into(), "a".into(), -200, None, 200, None, 0, 0).await;
+        state.create_local_event("b".into(), "a".into(), 100, None, 0, None).await.unwrap();
+        let result = state.create_local_event("b".into(), "a".into(), -200, None, 200, None).await;
         assert!(result.is_ok());
         assert_eq!(state.account_balance("b", "a"), -100);
     }
@@ -822,10 +860,10 @@ mod tests {
     #[tokio::test]
     async fn idempotency_local_dedup() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 100, None, 0, None, 0, 0).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), 100, None, 0, None).await.unwrap();
 
-        let e1 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
-        let e2 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
+        let e1 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into())).await.unwrap();
+        let e2 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into())).await.unwrap();
 
         assert_eq!(e1.event_id, e2.event_id); // same event returned
         assert_eq!(state.account_balance("b", "a"), 50); // charged once, not twice
@@ -833,20 +871,19 @@ mod tests {
 
     #[tokio::test]
     async fn available_balance_with_holds() {
-        let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
-
-        let far_future = Event::now_ms() + 600_000; // 10 min from now
-        state.create_local_event("b".into(), "a".into(), -100, None, 0, None, 500, far_future).await.unwrap();
+        // Use state with hold_multiplier=5, so a -100 debit creates a 500 hold
+        let state = make_state_with_holds().await;
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), -100, None, 0, None).await.unwrap();
 
         assert_eq!(state.account_balance("b", "a"), 900); // settled
-        assert_eq!(state.account_available_balance("b", "a"), 400); // 900 - 500 hold
+        assert_eq!(state.account_available_balance("b", "a"), 400); // 900 - 500 hold (100 * 5)
     }
 
     #[tokio::test]
     async fn collapsed_state_confirmed_vs_provisional() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 100, None, 0, None, 0, 0).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), 100, None, 0, None).await.unwrap();
 
         let collapsed = state.collapsed_state();
         assert_eq!(collapsed["b:a"].status, "locally_confirmed");
@@ -916,13 +953,13 @@ mod tests {
 
         // Create state — idempotency cache is empty (not rebuilt from DB)
         let (tx, _rx) = mpsc::unbounded_channel();
-        let state = SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx).await;
+        let state = SharedState::new("test-node".into(), "127.0.0.1:3000".into(), 1, storage, tx, 0, 0).await;
 
         // Fund the account so overdraft doesn't reject
-        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None).await.unwrap();
 
         // Now try to create with the same nonce — should hit DB fallback and dedup
-        let result = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce-db-test".into()), 0, 0).await.unwrap();
+        let result = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce-db-test".into())).await.unwrap();
 
         // Should return the prior event (dedup from DB)
         assert_eq!(result.event_id, "prior-event-123");
@@ -933,10 +970,10 @@ mod tests {
     #[tokio::test]
     async fn cross_node_idempotency_conflict_emits_void() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None).await.unwrap();
 
         // This node creates an event with a nonce
-        let local = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("completion:abc".into()), 0, 0).await.unwrap();
+        let local = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("completion:abc".into())).await.unwrap();
 
         // A remote node also created an event with the same nonce (older timestamp)
         let remote = Event {
@@ -970,10 +1007,10 @@ mod tests {
     #[tokio::test]
     async fn idempotency_different_amount_same_nonce_not_dedup() {
         let state = make_state().await;
-        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None).await.unwrap();
 
-        let e1 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
-        let e2 = state.create_local_event("b".into(), "a".into(), -100, None, 0, Some("nonce1".into()), 0, 0).await.unwrap();
+        let e1 = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("nonce1".into())).await.unwrap();
+        let e2 = state.create_local_event("b".into(), "a".into(), -100, None, 0, Some("nonce1".into())).await.unwrap();
 
         // Different amounts = different operations, not duplicates
         assert_ne!(e1.event_id, e2.event_id);
