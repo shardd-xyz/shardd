@@ -7,6 +7,7 @@
 
 pub mod http;
 pub mod memory;
+pub mod gossip;
 
 use async_trait::async_trait;
 use shardd_types::Event;

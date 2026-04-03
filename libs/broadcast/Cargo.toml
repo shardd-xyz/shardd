@@ -12,7 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
-foca = "0.17"
+foca = { version = "0.17", features = ["bincode-codec", "std"] }
 bincode = "1"
-rand = { workspace = true }
+bytes = "1"
+rand_08 = { package = "rand", version = "0.8" }
 anyhow = { workspace = true }
