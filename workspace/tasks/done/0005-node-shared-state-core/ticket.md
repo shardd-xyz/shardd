@@ -10,13 +10,13 @@ Implement SharedState with all 11 in-memory caches per §5. Per-account atomic s
 Critical: create_local_event must hold the per-account mutex across idempotency check + overdraft + hold reservation + event creation (§3.1).
 
 ## Acceptance Criteria
-- [ ] All 11 caches from §5 implemented
-- [ ] Per-account Mutex<AccountState> for the atomic section
-- [ ] create_local_event: idempotency + overdraft + hold in single lock
-- [ ] insert_event: entry-level dedup on event_buffer
-- [ ] Head advancement per (origin, epoch) with pending_seqs drain
-- [ ] available_balance computation (balance - active_holds)
-- [ ] Balance = SUM(amount) invariant maintained
+- [x] All 11 caches from §5 implemented
+- [x] Per-account Mutex<AccountState> for the atomic section
+- [x] create_local_event: idempotency + overdraft + hold in single lock
+- [x] insert_event: entry-level dedup on event_buffer
+- [x] Head advancement per (origin, epoch) with pending_seqs drain
+- [x] available_balance computation (balance - active_holds)
+- [x] Balance = SUM(amount) invariant maintained
 
 ## Dependencies
 - Blocked by: 0001, 0003/0004
@@ -24,3 +24,5 @@ Critical: create_local_event must hold the per-account mutex across idempotency 
 
 ## History
 - 2026-04-03 Created from brutal-plan PLAN-0001
+- 2026-04-03 06:35 Implementation complete. 11 tests passing.
+- 2026-04-03 06:35 Task completed.
