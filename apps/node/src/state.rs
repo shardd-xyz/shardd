@@ -331,7 +331,139 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         // Queue for async persistence to this node's own PG
         let _ = self.batch_tx.send(event.clone());
 
+        // §10.4: Cross-node idempotency conflict check
+        self.check_idempotency_conflict(event).await;
+
         true
+    }
+
+    /// Check for idempotency conflicts and emit corrections (§10.4-10.6).
+    async fn check_idempotency_conflict(&self, event: &Event) {
+        let nonce = match &event.idempotency_nonce {
+            Some(n) => n.clone(),
+            None => return,
+        };
+
+        let idem_key = (nonce.clone(), event.bucket.clone(), event.account.clone(), event.amount);
+
+        // Check if we already have an event with this idempotency key
+        let existing = self.idempotency_cache.get(&idem_key).map(|e| e.value().clone());
+        let existing = match existing {
+            Some(e) if e.event_id != event.event_id => Some(e),
+            _ => None,
+        };
+
+        let existing = match existing {
+            Some(e) => e,
+            None => {
+                // No conflict — install in cache
+                self.idempotency_cache.insert(idem_key, event.clone());
+                return;
+            }
+        };
+
+        // Conflict! Determine winner per §10.4
+        let (winner, loser) = shardd_types::idempotency_winner(&existing, event);
+
+        // Update cache to point to winner
+        self.idempotency_cache.insert(idem_key, winner.clone());
+
+        // §10.5: Emit void for the loser (if not already emitted)
+        let void_nonce = format!("void:{}", loser.event_id);
+        let void_idem = (void_nonce.clone(), loser.bucket.clone(), loser.account.clone(), -loser.amount);
+
+        if self.idempotency_cache.contains_key(&void_idem) {
+            return; // Already emitted (or another node did)
+        }
+
+        // Check DB too
+        if let Ok(matches) = self.storage.find_by_idempotency_key(&void_nonce, &loser.bucket, &loser.account, -loser.amount).await {
+            if !matches.is_empty() { return; }
+        }
+
+        // Emit void event
+        let seq = self.next_seq.fetch_add(1, Relaxed);
+        let void_event = Event {
+            event_id: Event::generate_id(),
+            origin_node_id: self.node_id.to_string(),
+            origin_epoch: self.current_epoch,
+            origin_seq: seq,
+            created_at_unix_ms: Event::now_ms(),
+            r#type: EventType::Void,
+            bucket: loser.bucket.clone(),
+            account: loser.account.clone(),
+            amount: -loser.amount,
+            note: Some(format!("void: duplicate of event {}", winner.event_id)),
+            idempotency_nonce: Some(void_nonce.clone()),
+            void_ref: Some(loser.event_id.clone()),
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+
+        // Apply void to state
+        self.apply_correction_event(&void_event).await;
+
+        // §10.5 step 2: If loser had a hold, emit hold_release
+        if loser.has_hold() {
+            let release_nonce = format!("release:{}", loser.event_id);
+            let release_idem = (release_nonce.clone(), loser.bucket.clone(), loser.account.clone(), 0);
+
+            if !self.idempotency_cache.contains_key(&release_idem) {
+                let release_seq = self.next_seq.fetch_add(1, Relaxed);
+                let release_event = Event {
+                    event_id: Event::generate_id(),
+                    origin_node_id: self.node_id.to_string(),
+                    origin_epoch: self.current_epoch,
+                    origin_seq: release_seq,
+                    created_at_unix_ms: Event::now_ms(),
+                    r#type: EventType::HoldRelease,
+                    bucket: loser.bucket.clone(),
+                    account: loser.account.clone(),
+                    amount: 0,
+                    note: Some(format!("release hold: duplicate of event {}", winner.event_id)),
+                    idempotency_nonce: Some(release_nonce),
+                    void_ref: Some(loser.event_id.clone()),
+                    hold_amount: 0,
+                    hold_expires_at_unix_ms: 0,
+                };
+                self.apply_correction_event(&release_event).await;
+            }
+        }
+    }
+
+    /// Apply a correction event (void or hold_release) to local state.
+    async fn apply_correction_event(&self, event: &Event) {
+        let key = event.origin_key();
+        self.event_buffer.insert(key.clone(), event.clone());
+        self.unpersisted.insert(key, event.created_at_unix_ms);
+
+        let acct_key = event.balance_key();
+        let acct = self.accounts.entry(acct_key)
+            .or_insert_with(|| Arc::new(Mutex::new(AccountState::new())))
+            .clone();
+        let mut state = acct.lock().await;
+        state.balance += event.amount;
+        state.event_count += 1;
+        if event.r#type == EventType::HoldRelease {
+            if let Some(ref void_ref) = event.void_ref {
+                state.released.insert(void_ref.clone());
+            }
+        }
+        drop(state);
+
+        self.advance_head(&event.epoch_key(), event.origin_seq);
+        self.update_origin_tracking(event);
+        self.total_event_count.fetch_add(1, Relaxed);
+
+        // Install correction in idempotency cache
+        if let Some(ref nonce) = event.idempotency_nonce {
+            self.idempotency_cache.insert(
+                (nonce.clone(), event.bucket.clone(), event.account.clone(), event.amount),
+                event.clone(),
+            );
+        }
+
+        let _ = self.batch_tx.send(event.clone());
     }
 
     /// Insert a batch of events. Returns count of newly inserted.
@@ -773,6 +905,43 @@ mod tests {
         assert_eq!(result.event_id, "prior-event-123");
         // Balance should NOT have been charged again
         assert_eq!(state.account_balance("b", "a"), 950); // 1000 - 50 from rebuild, not -50 again
+    }
+
+    #[tokio::test]
+    async fn cross_node_idempotency_conflict_emits_void() {
+        let state = make_state().await;
+        state.create_local_event("b".into(), "a".into(), 1000, None, 0, None, 0, 0).await.unwrap();
+
+        // This node creates an event with a nonce
+        let local = state.create_local_event("b".into(), "a".into(), -50, None, 0, Some("completion:abc".into()), 0, 0).await.unwrap();
+
+        // A remote node also created an event with the same nonce (older timestamp)
+        let remote = Event {
+            event_id: "remote-event-older".into(),
+            origin_node_id: "remote-node".into(),
+            origin_epoch: 1,
+            origin_seq: 1,
+            created_at_unix_ms: local.created_at_unix_ms - 1000, // older = winner
+            r#type: EventType::Standard,
+            bucket: "b".into(),
+            account: "a".into(),
+            amount: -50,
+            note: None,
+            idempotency_nonce: Some("completion:abc".into()),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+
+        // Insert remote event — should trigger conflict detection
+        state.insert_event(&remote).await;
+
+        // Balance should be: 1000 - 50 (remote wins) - 50 (local) + 50 (void of local)
+        // = 1000 - 50 = 950
+        assert_eq!(state.account_balance("b", "a"), 950);
+
+        // Verify event count: 1 credit + 1 local debit + 1 remote debit + 1 void = 4
+        assert!(state.event_count() >= 4);
     }
 
     #[tokio::test]
