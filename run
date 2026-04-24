@@ -253,7 +253,7 @@ cmd_infractl() {
 
 # ── SDKs ──
 #
-# Three published client libraries live under sdks/. Each is a
+# Four client libraries live under sdks/. Each is a
 # standalone package (own manifest, own lockfile). Publishing happens
 # from the operator machine via `./run`, not from CI.
 
@@ -290,8 +290,15 @@ cmd_sdk_test_python() {
     )
 }
 
+cmd_sdk_test_kotlin() {
+    (
+        cd sdks/kotlin &&
+        ./gradlew --no-daemon test publishToMavenLocal
+    )
+}
+
 cmd_sdk_test() {
-    cmd_sdk_test_rust && cmd_sdk_test_ts && cmd_sdk_test_python
+    cmd_sdk_test_rust && cmd_sdk_test_ts && cmd_sdk_test_python && cmd_sdk_test_kotlin
 }
 
 # Spin up the 3-gateway docker harness, run every SDK's failover test
@@ -309,6 +316,7 @@ cmd_sdk_test_failover() {
     (cd sdks/typescript && [ -d dist ] || npm run build) >/dev/null
     (cd sdks/python && [ -d .venv ] || python3 -m venv .venv) >/dev/null
     (cd sdks/python && .venv/bin/pip install -q -e ".[dev]") >/dev/null
+    (cd sdks/kotlin && ./gradlew --no-daemon testClasses) >/dev/null
 
     echo "--- building + starting failover nodes (3 nodes, 3 dbs) ---"
     docker compose -f "$compose_file" up -d --build db1 db2 db3 node1 node2 node3
@@ -384,6 +392,8 @@ cmd_sdk_test_failover() {
         bash -c '(cd sdks/typescript && npm test -- tests/failover.test.ts)'
     run_phase "python / all healthy" \
         bash -c '(cd sdks/python && .venv/bin/pytest tests/test_failover.py -v)'
+    run_phase "kotlin / all healthy" \
+        bash -c '(cd sdks/kotlin && ./gradlew --no-daemon test --tests xyz.shardd.sdk.FailoverTest)'
 
     # Phase 2 — kill gateway2 mid-flight, re-run.
     echo
@@ -398,6 +408,8 @@ cmd_sdk_test_failover() {
         bash -c '(cd sdks/typescript && npm test -- tests/failover.test.ts)'
     run_phase "python / gateway2 down" \
         bash -c '(cd sdks/python && .venv/bin/pytest tests/test_failover.py -v)'
+    run_phase "kotlin / gateway2 down" \
+        bash -c '(cd sdks/kotlin && ./gradlew --no-daemon test --tests xyz.shardd.sdk.FailoverTest)'
 
     if [ "$failed" -ne 0 ]; then
         echo
@@ -436,6 +448,25 @@ cmd_sdk_publish_ts() {
     (cd sdks/typescript && npm publish --access public)
     echo
     echo "published shardd@$version to npm"
+}
+
+cmd_sdk_publish_kotlin() {
+    local version="$1"
+    _sdk_require_version kotlin "$version"
+    # Bump version = "x.y.z" (first occurrence) in build.gradle.kts.
+    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" sdks/kotlin/build.gradle.kts
+    (cd sdks/kotlin && ./gradlew --no-daemon test publishToMavenLocal)
+    echo
+    echo "about to publish sdks/kotlin v$version to Maven Central"
+    echo "this is permanent and cannot be overwritten"
+    # publishAndReleaseToMavenCentral uploads to the Central Portal and
+    # auto-releases. Requires ORG_GRADLE_PROJECT_mavenCentralUsername,
+    # ORG_GRADLE_PROJECT_mavenCentralPassword (Central Portal user token),
+    # ORG_GRADLE_PROJECT_signingInMemoryKey (ASCII-armored GPG private key),
+    # and ORG_GRADLE_PROJECT_signingInMemoryKeyPassword (if the key has one).
+    (cd sdks/kotlin && ./gradlew --no-daemon publishAndReleaseToMavenCentral)
+    echo
+    echo "published xyz.shardd:sdk:$version to Maven Central"
 }
 
 cmd_sdk_publish_python() {
@@ -516,13 +547,15 @@ Deploy:
   infra:ctl [args]   Pass through to ./infra/infractl.py
 
 SDKs:
-  sdk:test                   Build + test all three SDKs (rust, ts, python)
+  sdk:test                   Build + test all four SDKs (rust, ts, python, kotlin)
   sdk:test:rust              Build + test sdks/rust
   sdk:test:ts                Install + build + test sdks/typescript
   sdk:test:python            Install + test sdks/python (creates .venv)
+  sdk:test:kotlin            Build + test sdks/kotlin and publish to Maven local
   sdk:publish:rust <version> Bump sdks/rust version, test, publish locally to crates.io
   sdk:publish:ts <version>   Bump sdks/typescript version, test, publish locally to npm
   sdk:publish:python <ver>   Bump sdks/python version, test, publish locally to PyPI
+  sdk:publish:kotlin <ver>   Bump sdks/kotlin version, test, publish locally to Maven Central
   sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
 
 Other:
@@ -563,9 +596,11 @@ case "${1:-help}" in
     sdk:test:rust)  shift || true; cmd_sdk_test_rust "$@" ;;
     sdk:test:ts)    shift || true; cmd_sdk_test_ts "$@" ;;
     sdk:test:python) shift || true; cmd_sdk_test_python "$@" ;;
+    sdk:test:kotlin) shift || true; cmd_sdk_test_kotlin "$@" ;;
     sdk:publish:rust)   shift || true; cmd_sdk_publish_rust "$@" ;;
     sdk:publish:ts)     shift || true; cmd_sdk_publish_ts "$@" ;;
     sdk:publish:python) shift || true; cmd_sdk_publish_python "$@" ;;
+    sdk:publish:kotlin) shift || true; cmd_sdk_publish_kotlin "$@" ;;
     sdk:test:failover)  shift || true; cmd_sdk_test_failover "$@" ;;
     clean)          cmd_clean ;;
     help|--help|-h) cmd_help ;;

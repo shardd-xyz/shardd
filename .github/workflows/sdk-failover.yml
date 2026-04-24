@@ -65,11 +65,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Java (for sdks/kotlin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
       - name: Pre-install SDK deps
         run: |
           (cd sdks/typescript && npm ci && npm run build)
           (cd sdks/python && python -m venv .venv && .venv/bin/pip install -e ".[dev]")
           (cd sdks/rust && cargo build --tests)
+          (cd sdks/kotlin && ./gradlew --no-daemon testClasses)
 
       - name: Run failover harness (docker compose up + SDK failover tests)
         run: bash run sdk:test:failover

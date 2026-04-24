@@ -195,11 +195,12 @@ dashboard host. The intended operator entrypoint is `./run`, for example:
 This repository uses split licensing:
 
 - **Client SDKs under `sdks/`** — the `shardd` crate on
-  [crates.io](https://crates.io/crates/shardd), the `shardd`
-  [npm](https://www.npmjs.com/package/shardd) package, and the `shardd`
-  [PyPI](https://pypi.org/project/shardd/) package — are MIT. Embed
-  them in any application, commercial or otherwise; each SDK
-  subdirectory ships its own MIT `LICENSE` file.
+  [crates.io](https://crates.io/crates/shardd), the `@shardd/sdk`
+  [npm](https://www.npmjs.com/package/@shardd/sdk) package, the
+  `shardd` [PyPI](https://pypi.org/project/shardd/) package, and the
+  Kotlin SDK in `sdks/kotlin/` — are MIT. Embed them in any
+  application, commercial or otherwise; each SDK subdirectory ships its
+  own MIT `LICENSE` file.
 - **The `landing/` site and docs** are MIT under [`landing/LICENSE`](landing/LICENSE).
 - **Everything else** — the nodes, gateway, dashboard, infra, CLI,
   bench, root docs, and internal libraries — is
