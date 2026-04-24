@@ -254,9 +254,8 @@ cmd_infractl() {
 # ── SDKs ──
 #
 # Three published client libraries live under sdks/. Each is a
-# standalone package (own manifest, own lockfile). CI publishes on a
-# tag of the form sdk-<lang>-v<version>; these commands help bump the
-# version, test locally, then tag + push.
+# standalone package (own manifest, own lockfile). Publishing happens
+# from the operator machine via `./run`, not from CI.
 
 _sdk_require_version() {
     local lang="$1"
@@ -416,14 +415,13 @@ cmd_sdk_publish_rust() {
     # Bump version in sdks/rust/Cargo.toml (first `version = "..."` line).
     sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" sdks/rust/Cargo.toml
     (cd sdks/rust && cargo build && cargo test)
-    (cd sdks/rust && cargo publish --dry-run)
-    git add sdks/rust/Cargo.toml sdks/rust/Cargo.lock
-    git commit -m "sdk-rust: release v$version"
-    git tag "sdk-rust-v$version"
-    git push && git push --tags
+    (cd sdks/rust && cargo publish --dry-run --allow-dirty)
     echo
-    echo "tagged sdk-rust-v$version — CI will publish to crates.io."
-    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+    echo "about to publish sdks/rust v$version to crates.io"
+    echo "this is permanent and cannot be overwritten"
+    (cd sdks/rust && cargo publish --allow-dirty)
+    echo
+    echo "published shardd v$version to crates.io"
 }
 
 cmd_sdk_publish_ts() {
@@ -432,13 +430,12 @@ cmd_sdk_publish_ts() {
     (cd sdks/typescript && npm version "$version" --no-git-tag-version --allow-same-version)
     (cd sdks/typescript && npm install --no-audit --no-fund && npm run build && npm test)
     (cd sdks/typescript && npm pack --dry-run)
-    git add sdks/typescript/package.json sdks/typescript/package-lock.json
-    git commit -m "sdk-ts: release v$version"
-    git tag "sdk-ts-v$version"
-    git push && git push --tags
     echo
-    echo "tagged sdk-ts-v$version — CI will publish to npm."
-    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+    echo "about to publish sdks/typescript v$version to npm"
+    echo "this is permanent and cannot be overwritten"
+    (cd sdks/typescript && npm publish --access public)
+    echo
+    echo "published shardd@$version to npm"
 }
 
 cmd_sdk_publish_python() {
@@ -454,13 +451,15 @@ cmd_sdk_publish_python() {
         .venv/bin/python -m build &&
         .venv/bin/twine check dist/*
     )
-    git add sdks/python/pyproject.toml sdks/python/src/shardd/__init__.py
-    git commit -m "sdk-python: release v$version"
-    git tag "sdk-py-v$version"
-    git push && git push --tags
     echo
-    echo "tagged sdk-py-v$version — CI will publish to PyPI."
-    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+    echo "about to publish sdks/python v$version to PyPI"
+    echo "this is permanent and cannot be overwritten"
+    (
+        cd sdks/python &&
+        .venv/bin/twine upload dist/*
+    )
+    echo
+    echo "published shardd v$version to PyPI"
 }
 
 # ── Housekeeping ──
@@ -521,9 +520,9 @@ SDKs:
   sdk:test:rust              Build + test sdks/rust
   sdk:test:ts                Install + build + test sdks/typescript
   sdk:test:python            Install + test sdks/python (creates .venv)
-  sdk:publish:rust <version> Bump sdks/rust version, test, tag, push (CI publishes to crates.io)
-  sdk:publish:ts <version>   Bump sdks/typescript version, test, tag, push (CI publishes to npm)
-  sdk:publish:python <ver>   Bump sdks/python version, test, tag, push (CI publishes to PyPI)
+  sdk:publish:rust <version> Bump sdks/rust version, test, publish locally to crates.io
+  sdk:publish:ts <version>   Bump sdks/typescript version, test, publish locally to npm
+  sdk:publish:python <ver>   Bump sdks/python version, test, publish locally to PyPI
   sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
 
 Other:

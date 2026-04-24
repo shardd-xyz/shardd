@@ -1,13 +1,10 @@
 name: sdk-python-publish
 
-# Fires when `./run sdk:publish:python <version>` creates and pushes a
-# tag of the form `sdk-py-v<version>`. Builds sdist + wheel, validates
-# with twine, then uploads to PyPI using PYPI_API_TOKEN.
+# Publishing is done from the operator machine via `./run
+# sdk:publish:python <version>`. This workflow is manual-only to avoid
+# accidental registry publishes from GitHub Actions.
 
 on:
-  push:
-    tags:
-      - "sdk-py-v*"
   workflow_dispatch:
 
 jobs:
