@@ -1,5 +1,5 @@
 {
-  "name": "shardd",
+  "name": "@shardd/sdk",
   "version": "0.1.0",
   "description": "Official TypeScript client for shardd — a globally distributed credit ledger with automatic regional failover.",
   "author": "shardd",

@@ -1,6 +1,6 @@
-# shardd
+# @shardd/sdk
 
-[![npm](https://img.shields.io/npm/v/shardd.svg)](https://www.npmjs.com/package/shardd)
+[![npm](https://img.shields.io/npm/v/%40shardd%2Fsdk.svg)](https://www.npmjs.com/package/@shardd/sdk)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Official TypeScript / JavaScript client for
@@ -16,13 +16,13 @@ modern browsers.
 ## Install
 
 ```bash
-npm install shardd
+npm install @shardd/sdk
 ```
 
 ## 30-second quickstart
 
 ```ts
-import { Client } from "shardd";
+import { Client } from "@shardd/sdk";
 
 const shardd = new Client(process.env.SHARDD_API_KEY!);
 
@@ -97,7 +97,7 @@ const shardd = new Client(process.env.SHARDD_API_KEY!, {
 ## Error handling
 
 ```ts
-import { Client, InsufficientFundsError, ShardError } from "shardd";
+import { Client, InsufficientFundsError, ShardError } from "@shardd/sdk";
 
 try {
   await shardd.createEvent("my-app", "user:alice", -1000);
