@@ -1,0 +1,6 @@
+:80 {
+    reverse_proxy shardd-gateway:8080 {
+        health_uri /gateway/health
+        health_interval 5s
+    }
+}

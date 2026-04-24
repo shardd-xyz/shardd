@@ -1,0 +1,45 @@
+{$SITE_ADDRESS:http://:80} {
+	encode gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	@https {
+		protocol https
+	}
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	route /api/billing/* {
+		reverse_proxy billing:3002
+	}
+
+	route /api/webhooks/* {
+		reverse_proxy billing:3002
+	}
+
+	route /api/* {
+		reverse_proxy dashboard:3001
+	}
+
+	route /grafana/* {
+		reverse_proxy grafana:3000
+	}
+
+	route /grafana {
+		reverse_proxy grafana:3000
+	}
+
+	route {
+		root * /srv/ui
+		try_files {path} /index.html
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed gzip
+		}
+	}
+}

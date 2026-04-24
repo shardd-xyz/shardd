@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/node",
+    "apps/cli",
+    "apps/bench",
+    "apps/dashboard",
+    "apps/dashboard-ui",
+    "apps/gateway",
+    "apps/billing",
+    "libs/types",
+    "libs/storage",
+    "libs/broadcast",
+]
+# sdks/rust is a standalone crate published to crates.io independently
+# of the internal workspace. Excluding it avoids cargo trying to resolve
+# it against workspace-relative paths.
+exclude = ["sdks/rust"]
+
+[workspace.package]
+edition = "2024"
+# The workspace (nodes, gateway, dashboard, libs, bench, CLI) is licensed
+# under the root TQDM Source-Available License 1.0. The SDK crate at
+# `sdks/rust/` is excluded from this workspace and stays MIT, and `landing/`
+# is also MIT under its own `LICENSE`.
+license = "LicenseRef-TQDM-SAL-1.0"
+
+[workspace.dependencies]
+# Internal crates
+shardd-types = { path = "libs/types" }
+shardd-storage = { path = "libs/storage" }
+shardd-broadcast = { path = "libs/broadcast" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+axum = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Crypto
+sha2 = "0.10"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "migrate"] }
+
+# Other
+uuid = { version = "1", features = ["serde", "v4"] }
+dashmap = "6"
+rand = "0.9"
+tempfile = "3"
+futures = "0.3"

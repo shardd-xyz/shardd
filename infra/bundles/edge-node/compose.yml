@@ -1,0 +1,56 @@
+services:
+  gateway:
+    image: ${SHARDD_GATEWAY_IMAGE}
+    container_name: ${SERVICE_NAME}-gateway
+    environment:
+      SHARDD_CLUSTER_KEY: ${SHARDD_CLUSTER_KEY}
+      SHARDD_DASHBOARD_URL: ${SHARDD_DASHBOARD_URL}
+      SHARDD_DASHBOARD_MACHINE_AUTH_SECRET: ${SHARDD_DASHBOARD_MACHINE_AUTH_SECRET}
+      RUST_LOG: ${RUST_LOG}
+      BOOTSTRAP_PEERS_CSV: ${BOOTSTRAP_PEERS_CSV}
+      SHARDD_PUBLIC_EDGE_ID: ${SHARDD_PUBLIC_EDGE_ID:-}
+      SHARDD_PUBLIC_EDGE_REGION: ${SHARDD_PUBLIC_EDGE_REGION:-}
+      SHARDD_PUBLIC_BASE_URL: ${SHARDD_PUBLIC_BASE_URL:-}
+      SHARDD_PUBLIC_EDGES_JSON: ${SHARDD_PUBLIC_EDGES_JSON:-}
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -- \
+          --host=0.0.0.0 \
+          --port=8080 \
+          --request-timeout-ms=${REQUEST_TIMEOUT_MS} \
+          --discovery-timeout-ms=${DISCOVERY_TIMEOUT_MS} \
+          --top-k=${TOP_K} \
+          --max-sync-gap=${MAX_SYNC_GAP}
+        if [ -n "$${BOOTSTRAP_PEERS_CSV}" ]; then
+          old_ifs="$$IFS"
+          IFS=','
+          for peer in $${BOOTSTRAP_PEERS_CSV}; do
+            set -- "$$@" "--bootstrap-peer=$$peer"
+          done
+          IFS="$$old_ifs"
+        fi
+        exec shardd-gateway "$$@"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ${SERVICE_NAME}-caddy
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

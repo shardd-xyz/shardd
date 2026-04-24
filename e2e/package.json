@@ -1,0 +1,15 @@
+{
+  "name": "shardd-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Playwright UI tests for the shardd dashboard",
+  "scripts": {
+    "install:browsers": "playwright install chromium",
+    "test": "playwright test --config playwright.config.ts",
+    "test:mock": "playwright test --config playwright.config.ts",
+    "test:prod": "playwright test --config playwright.prod.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}

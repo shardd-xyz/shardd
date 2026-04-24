@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shardd"
+version = "0.1.0"
+description = "Official Python client for shardd — a globally distributed credit ledger with automatic regional failover."
+authors = [
+    { name = "shardd" },
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["shardd", "ledger", "credits", "sdk", "distributed"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "httpx>=0.25",
+]
+
+[project.urls]
+Homepage = "https://shardd.xyz"
+Documentation = "https://github.com/shardd-xyz/shardd/tree/main/sdks/python"
+Repository = "https://github.com/shardd-xyz/shardd"
+Issues = "https://github.com/shardd-xyz/shardd/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+    "pytest-httpx>=0.30",
+    "build",
+    "twine",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shardd"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/shardd",
+    "README.md",
+    "LICENSE",
+    "examples",
+    "tests",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

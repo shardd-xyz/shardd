@@ -1,0 +1,332 @@
+# Cross-region benchmark for shardd (libp2p).
+# 10 nodes across 5 simulated AWS regions with realistic one-way delays.
+# Each node has its own Postgres (per protocol §6.1 — no shared storage).
+#
+# Delays are HALF of measured AWS inter-region RTT (applied per-node egress):
+#   us-east-1     0ms    (origin, no extra delay)
+#   us-west-2    32ms    (~65ms RTT)
+#   eu-west-1    35ms    (~69ms RTT)
+#   ap-southeast 110ms   (~219ms RTT Singapore)
+#   sa-east-1    58ms    (~115ms RTT São Paulo)
+#
+# Network layout:
+#   172.40.0.2-11   — Postgres per node (db-us-east-1a-db ... db-sa-east-1b-db)
+#   172.40.0.12-21  — shardd-node (us-east-1a ... sa-east-1b)
+#
+# Bootstrap topology: 3 regional seeds (us-east-1a .12, eu-west-1a .16,
+# ap-southeast-1a .18). Seeds dial each other at startup for a direct
+# 3-hub mesh. Non-seeds each dial two seeds; the dials are balanced so
+# inbound fan-in across the three hubs is 6/6/5.
+
+x-pg-env: &pg-env
+  POSTGRES_DB: shardd
+  POSTGRES_USER: shardd
+  POSTGRES_PASSWORD: shardd
+
+x-pg-healthcheck: &pg-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U shardd"]
+  interval: 2s
+  retries: 20
+
+# shardd-node hard-requires SHARDD_CLUSTER_KEY: it is the PSK for the
+# private mesh and the secret half of the deterministic libp2p identity.
+# This local dev key is clearly labeled as insecure.
+x-node-cluster-env: &node-cluster-env
+  SHARDD_CLUSTER_KEY: bench-cross-region-insecure-cluster-key
+
+services:
+  # ── Per-node Postgres instances ──────────────────────────────────
+  db-us-east-1a:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.2
+
+  db-us-east-1b:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.3
+
+  db-us-west-2a:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.4
+
+  db-us-west-2b:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.5
+
+  db-eu-west-1a:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.6
+
+  db-eu-west-1b:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.7
+
+  db-ap-southeast-1a:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.8
+
+  db-ap-southeast-1b:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.9
+
+  db-sa-east-1a:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.10
+
+  db-sa-east-1b:
+    image: postgres:17-alpine
+    environment: *pg-env
+    healthcheck: *pg-healthcheck
+    tmpfs: [/var/lib/postgresql/data]
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.11
+
+  # ── us-east-1 (0ms) ──────────────────────────────────────────────
+  us-east-1a:
+    build:
+      context: ../..
+      dockerfile: bench/cross-region/Dockerfile.node
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: us-east-1
+      DELAY_MS: "0"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.12/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.2/shardd"
+    depends_on:
+      db-us-east-1a: { condition: service_healthy }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.12
+
+  us-east-1b:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: us-east-1
+      DELAY_MS: "0"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.13/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.3/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.12/tcp/9000 /ip4/172.40.0.16/tcp/9000"
+    depends_on:
+      db-us-east-1b: { condition: service_healthy }
+      us-east-1a: { condition: service_started }
+      eu-west-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.13
+
+  # ── us-west-2 (32ms) ─────────────────────────────────────────────
+  us-west-2a:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: us-west-2
+      DELAY_MS: "32"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.14/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.4/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.12/tcp/9000 /ip4/172.40.0.18/tcp/9000"
+    depends_on:
+      db-us-west-2a: { condition: service_healthy }
+      us-east-1a: { condition: service_started }
+      ap-southeast-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.14
+
+  us-west-2b:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: us-west-2
+      DELAY_MS: "32"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.15/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.5/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.16/tcp/9000 /ip4/172.40.0.18/tcp/9000"
+    depends_on:
+      db-us-west-2b: { condition: service_healthy }
+      eu-west-1a: { condition: service_started }
+      ap-southeast-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.15
+
+  # ── eu-west-1 (35ms) ─────────────────────────────────────────────
+  eu-west-1a:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: eu-west-1
+      DELAY_MS: "35"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.16/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.6/shardd"
+      # Seed dials the first seed (us-east-1a) at startup so the three
+      # seeds form a direct mesh without relying on non-seed relays.
+      BOOTSTRAP: "/ip4/172.40.0.12/tcp/9000"
+    depends_on:
+      db-eu-west-1a: { condition: service_healthy }
+      us-east-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.16
+
+  eu-west-1b:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: eu-west-1
+      DELAY_MS: "35"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.17/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.7/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.16/tcp/9000 /ip4/172.40.0.18/tcp/9000"
+    depends_on:
+      db-eu-west-1b: { condition: service_healthy }
+      eu-west-1a: { condition: service_started }
+      ap-southeast-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.17
+
+  # ── ap-southeast-1 (110ms) ───────────────────────────────────────
+  ap-southeast-1a:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: ap-southeast-1
+      DELAY_MS: "110"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.18/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.8/shardd"
+      # Seed dials the two earlier seeds at startup, completing the
+      # 3-seed direct mesh.
+      BOOTSTRAP: "/ip4/172.40.0.12/tcp/9000 /ip4/172.40.0.16/tcp/9000"
+    depends_on:
+      db-ap-southeast-1a: { condition: service_healthy }
+      us-east-1a: { condition: service_started }
+      eu-west-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.18
+
+  ap-southeast-1b:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: ap-southeast-1
+      DELAY_MS: "110"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.19/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.9/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.18/tcp/9000 /ip4/172.40.0.12/tcp/9000"
+    depends_on:
+      db-ap-southeast-1b: { condition: service_healthy }
+      ap-southeast-1a: { condition: service_started }
+      us-east-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.19
+
+  # ── sa-east-1 (58ms) ─────────────────────────────────────────────
+  sa-east-1a:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: sa-east-1
+      DELAY_MS: "58"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.20/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.10/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.12/tcp/9000 /ip4/172.40.0.16/tcp/9000"
+    depends_on:
+      db-sa-east-1a: { condition: service_healthy }
+      us-east-1a: { condition: service_started }
+      eu-west-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.20
+
+  sa-east-1b:
+    image: shardd-node:bench
+    cap_add: [NET_ADMIN]
+    environment:
+      <<: *node-cluster-env
+      REGION: sa-east-1
+      DELAY_MS: "58"
+      LIBP2P_PORT: "9000"
+      ADVERTISE_ADDR: "/ip4/172.40.0.21/tcp/9000"
+      DATABASE_URL: "postgres://shardd:shardd@172.40.0.11/shardd"
+      BOOTSTRAP: "/ip4/172.40.0.16/tcp/9000 /ip4/172.40.0.18/tcp/9000"
+    depends_on:
+      db-sa-east-1b: { condition: service_healthy }
+      eu-west-1a: { condition: service_started }
+      ap-southeast-1a: { condition: service_started }
+    networks:
+      shardnet:
+        ipv4_address: 172.40.0.21
+
+networks:
+  shardnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.40.0.0/24

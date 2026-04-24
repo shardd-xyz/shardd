@@ -1,0 +1,134 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Edge Ready",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "targets": [{ "expr": "shardd_edge_ready", "legendFormat": "{{edge}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }],
+          "thresholds": { "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] }
+        }
+      }
+    },
+    {
+      "title": "Healthy Nodes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "targets": [{ "expr": "shardd_edge_healthy_nodes", "legendFormat": "{{edge}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "yellow" }, { "value": 3, "color": "green" }] }
+        }
+      }
+    },
+    {
+      "title": "Discovered Nodes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "targets": [{ "expr": "shardd_edge_discovered_nodes", "legendFormat": "{{edge}}" }],
+      "fieldConfig": { "defaults": {} }
+    },
+    {
+      "title": "Best Node RTT (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "shardd_edge_best_node_rtt_ms", "legendFormat": "{{edge}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "pointSize": 5 }
+        }
+      }
+    },
+    {
+      "title": "Sync Gap",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "shardd_edge_sync_gap", "legendFormat": "{{edge}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 10, "color": "yellow" }, { "value": 50, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "title": "Per-Node RTT from Each Edge (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "targets": [{ "expr": "shardd_node_ping_rtt_ms", "legendFormat": "{{edge}} → {{node}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "pointSize": 3 }
+        }
+      }
+    },
+    {
+      "title": "Per-Node Sync Gap",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [{ "expr": "shardd_node_sync_gap", "legendFormat": "{{edge}} → {{node}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5 },
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 10, "color": "yellow" }, { "value": 50, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "title": "Edge Overloaded",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "targets": [{ "expr": "shardd_edge_overloaded", "legendFormat": "{{edge}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20 },
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "title": "Current RTT Matrix (edge → node, ms)",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "targets": [{ "expr": "shardd_node_ping_rtt_ms", "legendFormat": "{{edge}} → {{node}}", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 5, "color": "yellow" },
+              { "value": 100, "color": "orange" },
+              { "value": 200, "color": "red" }
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "minVizWidth": 16,
+        "minVizHeight": 16,
+        "valueMode": "color"
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["shardd", "mesh"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "shardd mesh overview",
+  "uid": "shardd-mesh-overview"
+}

@@ -1,0 +1,25 @@
+# Build shardd-node with libp2p support.
+FROM rust:1.88-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY apps ./apps
+COPY libs ./libs
+
+RUN cargo build --release -p shardd-node -p shardd-bench
+
+# Runtime image with tc for netem + shardd binaries
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    iproute2 \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/shardd-node /usr/local/bin/shardd-node
+COPY --from=builder /build/target/release/shardd-bench /usr/local/bin/shardd-bench
+COPY bench/cross-region/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

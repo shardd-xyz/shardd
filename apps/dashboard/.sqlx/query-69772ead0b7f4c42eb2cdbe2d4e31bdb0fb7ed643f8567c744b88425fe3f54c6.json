@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT\n                    COUNT(*) AS \"total!\",\n                    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS \"last_7!\",\n                    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') AS \"last_30!\",\n                    COUNT(*) FILTER (WHERE is_frozen) AS \"frozen!\",\n                    COUNT(*) FILTER (WHERE is_admin) AS \"admin!\"\n                FROM users\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_7!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_30!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "frozen!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "admin!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "69772ead0b7f4c42eb2cdbe2d4e31bdb0fb7ed643f8567c744b88425fe3f54c6"
+}

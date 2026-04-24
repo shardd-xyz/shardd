@@ -1,0 +1,8 @@
+[application]
+name = "shardd-dashboard-ui"
+
+[web.app]
+title = "shardd control plane"
+
+[web.watcher]
+watch_path = ["src", "assets"]

@@ -1,0 +1,81 @@
+name: sdk-failover
+
+# Spins up the 3-gateway local docker harness and runs every SDK's
+# failover test against it. Also kills one gateway mid-run to verify
+# the SDKs survive an outage using the `idempotency_nonce` retry
+# contract.
+#
+# This is a heavier job (~8-12min including image builds) so it runs:
+#   - on pushes/PRs that touch the SDKs, the compose file, gateway,
+#     or anything that could change failover behavior
+#   - on manual dispatch
+#
+# Plain unit tests live in sdk-ci.yml and run much faster.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "apps/gateway/**"
+      - "apps/node/**"
+      - "libs/broadcast/**"
+      - "libs/types/**"
+      - "docker-compose.failover.yml"
+      - ".github/workflows/sdk-failover.yml"
+      - "run"
+  pull_request:
+    paths:
+      - "sdks/**"
+      - "apps/gateway/**"
+      - "apps/node/**"
+      - "libs/broadcast/**"
+      - "libs/types/**"
+      - "docker-compose.failover.yml"
+      - ".github/workflows/sdk-failover.yml"
+      - "run"
+  workflow_dispatch:
+
+jobs:
+  failover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker buildx (layer caching)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Rust (for sdks/rust failover test)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdks/rust
+
+      - name: Set up Node (for sdks/typescript)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Set up Python (for sdks/python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pre-install SDK deps
+        run: |
+          (cd sdks/typescript && npm ci && npm run build)
+          (cd sdks/python && python -m venv .venv && .venv/bin/pip install -e ".[dev]")
+          (cd sdks/rust && cargo build --tests)
+
+      - name: Run failover harness (docker compose up + SDK failover tests)
+        run: bash run sdk:test:failover
+
+      - name: Dump gateway logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.failover.yml logs --tail=200 gateway1 gateway2 gateway3 || true
+          docker compose -f docker-compose.failover.yml ps || true

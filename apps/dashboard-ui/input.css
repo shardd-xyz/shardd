@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #020202;
+    --foreground: #eee;
+    --color-accent-100: #ef6f2e;
+    --color-accent-200: #ee6018;
+    --color-accent-300: #d15010;
+    --color-base-100: #d6d3d2;
+    --color-base-200: #ccc9c7;
+    --color-base-300: #b8b3b0;
+    --color-base-400: #a49d9a;
+    --color-base-500: #8a8380;
+    --color-base-600: #5c5855;
+    --color-base-700: #4d4947;
+    --color-base-800: #3d3a39;
+    --color-base-900: #2e2c2b;
+    --color-base-1000: #1f1d1c;
+    --btn-primary-bg: #1f1d1c;
+    --btn-primary-text: #fafafa;
+    --lines-color: var(--color-base-500);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: var(--font-mono, ui-monospace, 'JetBrains Mono', 'Fira Code', monospace);
+    font-size: 14px;
+    line-height: 1.4;
+    letter-spacing: -0.0175rem;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  button { cursor: pointer; }
+
+  input, select, textarea {
+    background-color: var(--color-base-1000);
+    border: 1px solid var(--color-base-800);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    color: var(--foreground);
+    font-family: inherit;
+    font-size: inherit;
+    outline: none;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--color-accent-100);
+    box-shadow: 0 0 0 1px rgba(239, 111, 46, 0.2);
+  }
+
+  input::placeholder { color: var(--color-base-600); }
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-100);
+    color: var(--background);
+  }
+}
+
+@layer utilities {
+  .btn-stripe-pattern {
+    background-image: repeating-linear-gradient(
+      45deg,
+      transparent 0px, transparent 2px,
+      var(--lines-color, var(--color-base-400)) 2px,
+      var(--lines-color, var(--color-base-400)) 3px,
+      transparent 3px, transparent 5px
+    );
+    background-size: 7.07px 7.07px;
+    animation: slidePattern 2s linear infinite;
+  }
+
+  .animate-spin {
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes slidePattern {
+    0% { background-position: 0 0; }
+    100% { background-position: 28.28px -28.28px; }
+  }
+}

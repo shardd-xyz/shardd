@@ -1,0 +1,37 @@
+[package]
+name = "shardd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Official Rust client for shardd — a globally distributed credit ledger with automatic regional failover."
+documentation = "https://docs.rs/shardd"
+homepage = "https://shardd.xyz"
+repository = "https://github.com/shardd-xyz/shardd"
+readme = "README.md"
+keywords = ["shardd", "ledger", "credits", "sdk", "distributed"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["time", "macros", "rt"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+
+[features]
+default = ["rustls-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
+native-tls = ["reqwest/native-tls"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[[example]]
+name = "quickstart"
+path = "examples/quickstart.rs"
+
+[package.metadata.docs.rs]
+all-features = true

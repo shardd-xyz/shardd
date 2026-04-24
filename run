@@ -1,0 +1,546 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# ── Local dev defaults ──
+# The libp2p identity is derived from the cluster key, so running any node or
+# gateway without one now fails hard. For local dev we inject a clearly-
+# labeled insecure key if SHARDD_CLUSTER_KEY isn't already set. Prod uses a
+# real high-entropy key from infra/secrets/{dev,prod}.env.
+export SHARDD_CLUSTER_KEY="${SHARDD_CLUSTER_KEY:-local-dev-insecure-cluster-key-do-not-use-in-prod}"
+
+# ── Infrastructure (Docker) ──
+
+cmd_infra() {
+    docker compose up -d "$@"
+    docker compose ps
+}
+
+cmd_infra_stop() {
+    docker compose down "$@"
+}
+
+cmd_infra_logs() {
+    docker compose logs -f "$@"
+}
+
+# ── Local dev (no Docker) ──
+
+cmd_node() {
+    local libp2p_port="${1:-4001}"
+    shift || true
+    local db_url="${DATABASE_URL:-postgres://shardd:shardd@localhost/shardd_${libp2p_port}}"
+    echo "Starting node on libp2p port ${libp2p_port} (db: ${db_url})..."
+    cargo run -p shardd-node -- --libp2p-port "$libp2p_port" --database-url "$db_url" "$@"
+}
+
+cmd_cluster() {
+    local host="${SHARDD_HOST:-127.0.0.1}"
+    local db_base="${SHARDD_DB_BASE:-postgres://shardd:shardd@localhost/shardd}"
+    local seed_multiaddr="/ip4/${host}/tcp/4001"
+    echo "Building release..."
+    cargo build --release -p shardd-node
+    echo "Starting 3-node cluster (host=${host})..."
+    ./target/release/shardd-node --host 0.0.0.0 --libp2p-port 4001 \
+        --advertise-addr "/ip4/${host}/tcp/4001" --database-url "${db_base}_a" &
+    sleep 1
+    ./target/release/shardd-node --host 0.0.0.0 --libp2p-port 4002 \
+        --advertise-addr "/ip4/${host}/tcp/4002" --database-url "${db_base}_b" \
+        --bootstrap "$seed_multiaddr" &
+    ./target/release/shardd-node --host 0.0.0.0 --libp2p-port 4003 \
+        --advertise-addr "/ip4/${host}/tcp/4003" --database-url "${db_base}_c" \
+        --bootstrap "$seed_multiaddr" &
+    echo "Cluster running: libp2p ports 4001-4003. Use ./run gateway or ./run cli --bootstrap-peer ${seed_multiaddr}. Press Ctrl+C to stop."
+    wait
+}
+
+cmd_cluster_stop() {
+    echo "Stopping local cluster..."
+    pkill -f "shardd-node" || true
+}
+
+cmd_gateway() {
+    local port="${1:-8080}"
+    shift || true
+    local bootstrap="${SHARDD_BOOTSTRAP_PEER:-/ip4/127.0.0.1/tcp/4001}"
+    # mesh_client now hard-requires a stable identity_seed; default to "local"
+    # for dev runs so the binary doesn't refuse to start.
+    export SHARDD_PUBLIC_EDGE_ID="${SHARDD_PUBLIC_EDGE_ID:-local}"
+    echo "Starting gateway on port ${port} via bootstrap ${bootstrap} (edge_id=${SHARDD_PUBLIC_EDGE_ID})..."
+    cargo run -p shardd-gateway -- --port "$port" --bootstrap-peer "$bootstrap" "$@"
+}
+
+# ── CLI client ──
+
+cmd_cli() {
+    cargo run -p shardd-cli -- "$@"
+}
+
+# ── Benchmark ──
+
+cmd_bench() {
+    cargo run -p shardd-bench -- "$@"
+}
+
+# ── Build ──
+
+cmd_build() {
+    echo "Building Docker images..."
+    docker build -f apps/node/Dockerfile -t shardd-node:latest .
+    docker build -f apps/gateway/Dockerfile -t shardd-gateway:latest .
+}
+
+# Build the Dioxus dashboard UI per Dioxus 0.7 guidelines (`dx bundle --web
+# --release`) and refresh `apps/dashboard/assets/` so the dashboard bundle
+# serves the latest WASM/CSS. We wipe the destination first to prevent stale
+# hash-suffixed files from accumulating across rebuilds.
+cmd_build_ui() {
+    local out_dir
+    out_dir="$(mktemp -d -t shardd-ui-bundle-XXXXXX)"
+
+    echo "Compiling Tailwind..."
+    (cd apps/dashboard-ui && npx --yes tailwindcss -i input.css -o assets/tailwind.css --minify)
+
+    # dx bundles every hashed asset that has ever landed in its release cache,
+    # not just the ones referenced by index.html. Wipe the cache sub-dir so the
+    # bundle contains only the current build's files. The Rust compile cache
+    # under target/release/ is untouched, so this does NOT trigger a cold
+    # rebuild — only wasm-bindgen + wasm-opt rerun.
+    rm -rf target/dx/shardd-dashboard-ui/release/web/public
+
+    echo "Bundling Dioxus UI (release)..."
+    (cd apps/dashboard-ui && dx bundle --web --release --out-dir "$out_dir")
+
+    local bundle_public="$out_dir/public"
+    if [ ! -d "$bundle_public" ]; then
+        echo "error: expected bundle output at $bundle_public but it is missing" >&2
+        rm -rf "$out_dir"
+        exit 1
+    fi
+
+    local dest="apps/dashboard/assets"
+    echo "Refreshing $dest ..."
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R "$bundle_public"/. "$dest"/
+    rm -rf "$out_dir"
+    echo "UI assets refreshed ($(find "$dest" -type f | wc -l) files)."
+}
+
+# ── Code quality ──
+
+cmd_fmt() {
+    cargo fmt --all
+}
+
+cmd_lint() {
+    cargo clippy --workspace --all-targets "$@"
+}
+
+cmd_test() {
+    cargo test --workspace "$@"
+}
+
+# ── Deploy ──
+
+cmd_state() {
+    ./infra/infractl.py state "$@"
+}
+
+cmd_servers() {
+    # `servers setup` needs TAILSCALE_AUTH_KEY (and other secrets); source
+    # infra/secrets/<deployment>.env up-front. Detect the deployment from
+    # --deployment or default to prod.
+    local deployment="prod"
+    local prev=""
+    for arg in "$@"; do
+        if [ "$prev" = "--deployment" ]; then
+            deployment="$arg"
+            break
+        fi
+        prev="$arg"
+    done
+    local env_file="infra/secrets/${deployment}.env"
+    if [ -f "$env_file" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "$env_file"
+        set +a
+    fi
+    ./infra/infractl.py servers "$@"
+}
+
+cmd_deploy() {
+    # Forward subcommands (plan/status/validate-scopes/etc.) and any explicit
+    # flags straight through to infractl so existing operator muscle memory
+    # keeps working.
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            plan|apply|status|validate-scopes)
+                ./infra/infractl.py deploy "$@"
+                return
+                ;;
+            -*)
+                # e.g. ./run deploy --deployment prod --name shardd-prod-use1-dashboard --skip-build
+                ./infra/infractl.py deploy apply "$@"
+                return
+                ;;
+        esac
+    fi
+    # No args = full prod deploy. Run the quality pipeline, build the UI,
+    # then let infractl build + push every needed Docker image.
+    cmd_deploy_full prod "$@"
+}
+
+# Full deploy pipeline: checks (unless DEPLOY_SKIP_CHECKS=1) → UI build →
+# infractl deploy apply. Used by `./run deploy` (no args) and `./run
+# deploy:fast`.
+cmd_deploy_full() {
+    local deployment="${1:?deployment name required}"
+    shift || true
+
+    if [ "${DEPLOY_SKIP_CHECKS:-0}" != "1" ]; then
+        echo "▶ fmt"
+        cmd_fmt
+        echo "▶ lint"
+        cmd_lint
+        echo "▶ test"
+        cmd_test
+    else
+        echo "▶ skipping fmt/lint/test (deploy:fast)"
+    fi
+
+    echo "▶ building dashboard UI"
+    cmd_build_ui
+
+    # infractl resolves secret_env entries by reading the mapped env vars, so
+    # we source infra/secrets/<deployment>.env and then backfill a few legacy
+    # name remappings that the cluster state still uses.
+    local env_file="infra/secrets/${deployment}.env"
+    if [ -f "$env_file" ]; then
+        echo "▶ sourcing $env_file"
+        set -a
+        # shellcheck disable=SC1090
+        source "$env_file"
+        set +a
+        export SHARDD_DASHBOARD_MACHINE_AUTH_SECRET="${SHARDD_DASHBOARD_MACHINE_AUTH_SECRET:-${SAASSY_MACHINE_AUTH_SECRET:-}}"
+        export SHARDD_DASHBOARD_JWT_SECRET="${SHARDD_DASHBOARD_JWT_SECRET:-${SAASSY_JWT_SECRET:-}}"
+        export SHARDD_DASHBOARD_RESEND_API_KEY="${SHARDD_DASHBOARD_RESEND_API_KEY:-${RESEND_API_KEY:-}}"
+    else
+        echo "⚠ no $env_file found; relying on pre-set env vars"
+    fi
+
+    echo "▶ deploying to '$deployment'"
+    ./infra/infractl.py deploy apply --deployment "$deployment" "$@"
+}
+
+cmd_deploy_fast() {
+    DEPLOY_SKIP_CHECKS=1 cmd_deploy_full prod "$@"
+}
+
+cmd_dns() {
+    ./infra/infractl.py dns "$@"
+}
+
+cmd_infra_tf() {
+    ./infra/infractl.py infra "$@"
+}
+
+cmd_infractl() {
+    ./infra/infractl.py "$@"
+}
+
+# ── SDKs ──
+#
+# Three published client libraries live under sdks/. Each is a
+# standalone package (own manifest, own lockfile). CI publishes on a
+# tag of the form sdk-<lang>-v<version>; these commands help bump the
+# version, test locally, then tag + push.
+
+_sdk_require_version() {
+    local lang="$1"
+    local version="$2"
+    if [ -z "$version" ]; then
+        echo "usage: ./run sdk:publish:$lang <version>"
+        echo "example: ./run sdk:publish:$lang 0.1.1"
+        exit 2
+    fi
+}
+
+cmd_sdk_test_rust() {
+    (cd sdks/rust && cargo build && cargo test "$@")
+}
+
+cmd_sdk_test_ts() {
+    (cd sdks/typescript && npm install --no-audit --no-fund && npm run build && npm test)
+}
+
+cmd_sdk_test_python() {
+    (
+        cd sdks/python &&
+        if [ ! -d .venv ]; then python3 -m venv .venv; fi &&
+        .venv/bin/pip install -q -e ".[dev]" &&
+        .venv/bin/pytest
+    )
+}
+
+cmd_sdk_test() {
+    cmd_sdk_test_rust && cmd_sdk_test_ts && cmd_sdk_test_python
+}
+
+# Spin up the 3-gateway docker harness, run every SDK's failover test
+# against it, tear down. Exercises: all-healthy probe, dead-port skip,
+# single-survivor routing, and mid-run gateway outage recovery. See
+# `docker-compose.failover.yml`.
+cmd_sdk_test_failover() {
+    local compose_file="docker-compose.failover.yml"
+    local gateways="http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083"
+
+    teardown() {
+        echo "--- tearing down failover harness ---"
+        docker compose -f "$compose_file" down -v --remove-orphans
+    }
+    trap teardown EXIT INT TERM
+
+    echo "--- pre-flight: ensure SDK build dirs are ready ---"
+    (cd sdks/typescript && [ -d node_modules ] || npm install --no-audit --no-fund) >/dev/null
+    (cd sdks/typescript && [ -d dist ] || npm run build) >/dev/null
+    (cd sdks/python && [ -d .venv ] || python3 -m venv .venv) >/dev/null
+    (cd sdks/python && .venv/bin/pip install -q -e ".[dev]") >/dev/null
+
+    echo "--- building + starting failover harness (3 gateways, 3 nodes) ---"
+    docker compose -f "$compose_file" up -d --build
+
+    # Wait until every gateway reports ready=true at least once. The
+    # gateway's mesh refresh flaps healthy_nodes 3↔0 every ~5s, which
+    # is intrinsic — the SDK handles this by only re-ranking on probe
+    # and reserving cooldowns for real-request failures. So a single
+    # positive per gateway is enough to know the stack is up.
+    echo "--- waiting for all 3 gateways to report ready=true ---"
+    local deadline=$(( $(date +%s) + 180 ))
+    for url in http://127.0.0.1:8081 http://127.0.0.1:8082 http://127.0.0.1:8083; do
+        while true; do
+            if [ "$(date +%s)" -gt "$deadline" ]; then
+                echo "timed out waiting for $url"
+                docker compose -f "$compose_file" logs --tail=80
+                exit 1
+            fi
+            if curl -fsS --max-time 2 "$url/gateway/health" 2>/dev/null | grep -q '"ready":true'; then
+                echo "  $url ready"
+                break
+            fi
+            sleep 1
+        done
+    done
+
+    # Export so the test env is visible to every subshell run_phase spawns.
+    # (bash's `VAR=x func cmd` syntax only sets VAR for `func` itself —
+    # not for commands func runs internally.)
+    export SHARDD_FAILOVER_GATEWAYS="$gateways"
+
+    local failed=0
+    run_phase() {
+        local phase="$1"; shift
+        echo
+        echo "=== [$phase] ==="
+        if ! "$@"; then
+            failed=1
+            echo "!!! [$phase] FAILED"
+        fi
+    }
+
+    # Phase 1 — all 3 gateways healthy.
+    unset SHARDD_FAILOVER_KILLED_GATEWAY
+    run_phase "rust / all healthy" \
+        bash -c '(cd sdks/rust && cargo test --test failover --quiet)'
+    run_phase "typescript / all healthy" \
+        bash -c '(cd sdks/typescript && npm test -- tests/failover.test.ts)'
+    run_phase "python / all healthy" \
+        bash -c '(cd sdks/python && .venv/bin/pytest tests/test_failover.py -v)'
+
+    # Phase 2 — kill gateway2 mid-flight, re-run.
+    echo
+    echo "=== killing gateway2 for mid-outage phase ==="
+    docker compose -f "$compose_file" stop gateway2
+    sleep 2
+    export SHARDD_FAILOVER_KILLED_GATEWAY=gateway2
+
+    run_phase "rust / gateway2 down" \
+        bash -c '(cd sdks/rust && cargo test --test failover --quiet)'
+    run_phase "typescript / gateway2 down" \
+        bash -c '(cd sdks/typescript && npm test -- tests/failover.test.ts)'
+    run_phase "python / gateway2 down" \
+        bash -c '(cd sdks/python && .venv/bin/pytest tests/test_failover.py -v)'
+
+    if [ "$failed" -ne 0 ]; then
+        echo
+        echo "!!! one or more SDK failover phases failed — printing gateway logs"
+        docker compose -f "$compose_file" logs --tail=100 gateway1 gateway2 gateway3
+        exit 1
+    fi
+    echo
+    echo "=== all SDK failover phases passed ==="
+}
+
+cmd_sdk_publish_rust() {
+    local version="$1"
+    _sdk_require_version rust "$version"
+    # Bump version in sdks/rust/Cargo.toml (first `version = "..."` line).
+    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" sdks/rust/Cargo.toml
+    (cd sdks/rust && cargo build && cargo test)
+    (cd sdks/rust && cargo publish --dry-run)
+    git add sdks/rust/Cargo.toml sdks/rust/Cargo.lock
+    git commit -m "sdk-rust: release v$version"
+    git tag "sdk-rust-v$version"
+    git push && git push --tags
+    echo
+    echo "tagged sdk-rust-v$version — CI will publish to crates.io."
+    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+}
+
+cmd_sdk_publish_ts() {
+    local version="$1"
+    _sdk_require_version ts "$version"
+    (cd sdks/typescript && npm version "$version" --no-git-tag-version --allow-same-version)
+    (cd sdks/typescript && npm install --no-audit --no-fund && npm run build && npm test)
+    (cd sdks/typescript && npm pack --dry-run)
+    git add sdks/typescript/package.json sdks/typescript/package-lock.json
+    git commit -m "sdk-ts: release v$version"
+    git tag "sdk-ts-v$version"
+    git push && git push --tags
+    echo
+    echo "tagged sdk-ts-v$version — CI will publish to npm."
+    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+}
+
+cmd_sdk_publish_python() {
+    local version="$1"
+    _sdk_require_version python "$version"
+    # Bump version = "x.y.z" (first occurrence) and __version__ in __init__.py.
+    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" sdks/python/pyproject.toml
+    sed -i "s/^__version__ = \".*\"$/__version__ = \"$version\"/" sdks/python/src/shardd/__init__.py
+    cmd_sdk_test_python
+    (
+        cd sdks/python &&
+        rm -rf dist &&
+        .venv/bin/python -m build &&
+        .venv/bin/twine check dist/*
+    )
+    git add sdks/python/pyproject.toml sdks/python/src/shardd/__init__.py
+    git commit -m "sdk-python: release v$version"
+    git tag "sdk-py-v$version"
+    git push && git push --tags
+    echo
+    echo "tagged sdk-py-v$version — CI will publish to PyPI."
+    echo "watch: https://github.com/shardd-xyz/shardd/actions"
+}
+
+# ── Housekeeping ──
+
+cmd_clean() {
+    echo "Removing demo data..."
+    rm -rf ./demo
+}
+
+# ── Help ──
+
+cmd_help() {
+    cat <<'EOF'
+Usage: ./run <command>
+
+Infrastructure (Docker):
+  infra              Start 3-node cluster via docker compose
+  infra:stop         Stop containers
+  infra:logs         Tail container logs
+
+Local dev (no Docker):
+  node [port] [...]  Run a single node (default libp2p port 4001)
+  cluster            Build and run a 3-node local cluster
+  cluster:stop       Stop local cluster processes
+  gateway [port]     Run the HTTP gateway against a libp2p cluster
+
+CLI client:
+  cli [args]         Run the shardd CLI client
+
+Benchmark:
+  bench [args]       Run mesh benchmark (see shardd-bench --help)
+
+Build:
+  build              Build node and gateway Docker images
+  build:ui           Bundle the Dioxus dashboard UI and refresh apps/dashboard/assets/
+
+Code quality:
+  fmt                Format all Rust code
+  lint               Run clippy on all crates
+  test               Run all tests
+
+Deploy:
+  infra:init [args]  Initialize Terraform state for cloud resources
+  infra:plan [args]  Show Terraform plan for cloud resources
+  infra:apply [args] Apply Terraform and sync machines.json
+  infra:destroy      Destroy Terraform-managed cloud resources
+  infra:output       Sync Terraform outputs into machines.json
+  state [args]       Run infrastructure state commands
+  servers [args]     Run infrastructure server lifecycle commands
+  deploy             Full prod deploy: fmt + lint + test + build UI + infractl apply
+  deploy:fast        Prod deploy skipping fmt/lint/test (still builds UI + images)
+  deploy <subcmd>    Pass through to ./infra/infractl.py deploy (plan|status|apply|...)
+  dns [args]         Generate DNS artifacts from infra state
+  infra:ctl [args]   Pass through to ./infra/infractl.py
+
+SDKs:
+  sdk:test                   Build + test all three SDKs (rust, ts, python)
+  sdk:test:rust              Build + test sdks/rust
+  sdk:test:ts                Install + build + test sdks/typescript
+  sdk:test:python            Install + test sdks/python (creates .venv)
+  sdk:publish:rust <version> Bump sdks/rust version, test, tag, push (CI publishes to crates.io)
+  sdk:publish:ts <version>   Bump sdks/typescript version, test, tag, push (CI publishes to npm)
+  sdk:publish:python <ver>   Bump sdks/python version, test, tag, push (CI publishes to PyPI)
+  sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
+
+Other:
+  clean              Remove demo data directories
+  help               Show this help
+EOF
+}
+
+# ── Router ──
+
+case "${1:-help}" in
+    infra)          shift || true; cmd_infra "$@" ;;
+    infra:stop)     shift || true; cmd_infra_stop "$@" ;;
+    infra:logs)     shift || true; cmd_infra_logs "$@" ;;
+    node)           shift || true; cmd_node "$@" ;;
+    cluster)        cmd_cluster ;;
+    cluster:stop)   cmd_cluster_stop ;;
+    gateway)        shift || true; cmd_gateway "$@" ;;
+    cli)            shift; cmd_cli "$@" ;;
+    bench)          shift || true; cmd_bench "$@" ;;
+    build)          cmd_build ;;
+    build:ui)       cmd_build_ui ;;
+    fmt)            cmd_fmt ;;
+    lint)           shift || true; cmd_lint "$@" ;;
+    test)           shift || true; cmd_test "$@" ;;
+    infra:init)     shift || true; cmd_infra_tf init "$@" ;;
+    infra:plan)     shift || true; cmd_infra_tf plan "$@" ;;
+    infra:apply)    shift || true; cmd_infra_tf apply "$@" ;;
+    infra:destroy)  shift || true; cmd_infra_tf destroy "$@" ;;
+    infra:output)   shift || true; cmd_infra_tf output "$@" ;;
+    state)          shift || true; cmd_state "$@" ;;
+    servers)        shift || true; cmd_servers "$@" ;;
+    deploy)         shift || true; cmd_deploy "$@" ;;
+    deploy:fast)    shift || true; cmd_deploy_fast "$@" ;;
+    dns)            shift || true; cmd_dns "$@" ;;
+    infra:ctl)      shift || true; cmd_infractl "$@" ;;
+    sdk:test)       shift || true; cmd_sdk_test "$@" ;;
+    sdk:test:rust)  shift || true; cmd_sdk_test_rust "$@" ;;
+    sdk:test:ts)    shift || true; cmd_sdk_test_ts "$@" ;;
+    sdk:test:python) shift || true; cmd_sdk_test_python "$@" ;;
+    sdk:publish:rust)   shift || true; cmd_sdk_publish_rust "$@" ;;
+    sdk:publish:ts)     shift || true; cmd_sdk_publish_ts "$@" ;;
+    sdk:publish:python) shift || true; cmd_sdk_publish_python "$@" ;;
+    sdk:test:failover)  shift || true; cmd_sdk_test_failover "$@" ;;
+    clean)          cmd_clean ;;
+    help|--help|-h) cmd_help ;;
+    *)              echo "Unknown command: $1"; echo; cmd_help; exit 1 ;;
+esac

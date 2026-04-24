@@ -1,0 +1,147 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${SERVICE_NAME}-postgres
+    environment:
+      POSTGRES_USER: saassy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: user_gateway
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-billing-db.sh:/docker-entrypoint-initdb.d/init-billing-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saassy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${SERVICE_NAME}-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  registry:
+    image: registry:2.8
+    container_name: ${SERVICE_NAME}-registry
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry_data:/var/lib/registry
+    ports:
+      # Tailnet-only. REGISTRY_BIND_IP is the host's tailscale IP so nothing
+      # on the public interface accepts a connection on 5000.
+      - "${REGISTRY_BIND_IP}:5000:5000"
+    restart: unless-stopped
+
+  dashboard:
+    image: ${SHARDD_DASHBOARD_IMAGE}
+    container_name: ${SERVICE_NAME}-dashboard
+    environment:
+      DATABASE_URL: postgres://saassy:${POSTGRES_PASSWORD}@postgres:5432/user_gateway
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      EMAIL_FROM: ${EMAIL_FROM}
+      APP_ORIGIN: ${APP_ORIGIN}
+      CORS_ORIGIN: ${APP_ORIGIN}
+      BIND_ADDR: 0.0.0.0:3001
+      RUST_LOG: ${RUST_LOG}
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+      IMPERSONATION_TTL_MINUTES: ${IMPERSONATION_TTL_MINUTES}
+      MACHINE_AUTH_SHARED_SECRET: ${MACHINE_AUTH_SHARED_SECRET}
+      SHARDD_PUBLIC_EDGES_JSON: ${SHARDD_PUBLIC_EDGES_JSON:-[]}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      BILLING_BASE_URL: http://billing:3002
+      BILLING_INTERNAL_SECRET: ${BILLING_INTERNAL_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  billing:
+    image: ${SHARDD_BILLING_IMAGE}
+    container_name: ${SERVICE_NAME}-billing
+    environment:
+      DATABASE_URL: postgres://saassy:${POSTGRES_PASSWORD}@postgres:5432/billing_db
+      JWT_SECRET: ${JWT_SECRET}
+      BIND_ADDR: 0.0.0.0:3002
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      GATEWAY_URL: ${GATEWAY_URL:-https://use1.api.shardd.xyz}
+      GATEWAY_MACHINE_AUTH_SECRET: ${MACHINE_AUTH_SHARED_SECRET}
+      BILLING_INTERNAL_SECRET: ${BILLING_INTERNAL_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@shardd.xyz}
+      CORS_ORIGIN: ${APP_ORIGIN}
+      APP_ORIGIN: ${APP_ORIGIN}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ${SERVICE_NAME}-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ${SERVICE_NAME}-grafana
+    environment:
+      GF_SERVER_ROOT_URL: https://${SITE_ADDRESS}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-shardd}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/shardd.yml:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ${SERVICE_NAME}-caddy
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./ui:/srv/ui:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      dashboard:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  grafana_data:
+  registry_data:

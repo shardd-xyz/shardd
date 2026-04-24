@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${SERVICE_NAME}-db
+    environment:
+      POSTGRES_DB: shardd
+      POSTGRES_USER: shardd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shardd"]
+      interval: 2s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  node:
+    image: ${SHARDD_NODE_IMAGE}
+    container_name: ${SERVICE_NAME}
+    environment:
+      SHARDD_CLUSTER_KEY: ${SHARDD_CLUSTER_KEY}
+      RUST_LOG: ${RUST_LOG}
+      BOOTSTRAP_PEERS_CSV: ${BOOTSTRAP_PEERS_CSV}
+      ADVERTISE_ADDRS_CSV: ${ADVERTISE_ADDRS_CSV}
+    ports:
+      - "${LIBP2P_PORT}:${LIBP2P_PORT}/tcp"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -- \
+          --host=0.0.0.0 \
+          --libp2p-port=${LIBP2P_PORT} \
+          --database-url='postgres://shardd:${POSTGRES_PASSWORD}@db/shardd' \
+          --batch-flush-interval-ms=${BATCH_FLUSH_INTERVAL_MS} \
+          --batch-flush-size=${BATCH_FLUSH_SIZE} \
+          --matview-refresh-ms=${MATVIEW_REFRESH_MS} \
+          --orphan-check-interval-ms=${ORPHAN_CHECK_INTERVAL_MS} \
+          --orphan-age-ms=${ORPHAN_AGE_MS} \
+          --hold-multiplier=${HOLD_MULTIPLIER} \
+          --hold-duration-ms=${HOLD_DURATION_MS} \
+          --event-worker-count=${EVENT_WORKER_COUNT}
+        if [ -n "$${ADVERTISE_ADDRS_CSV}" ]; then
+          old_ifs="$$IFS"
+          IFS=','
+          for addr in $${ADVERTISE_ADDRS_CSV}; do
+            set -- "$$@" "--advertise-addr=$$addr"
+          done
+          IFS="$$old_ifs"
+        fi
+        if [ -n "$${BOOTSTRAP_PEERS_CSV}" ]; then
+          old_ifs="$$IFS"
+          IFS=','
+          for peer in $${BOOTSTRAP_PEERS_CSV}; do
+            set -- "$$@" "--bootstrap=$$peer"
+          done
+          IFS="$$old_ifs"
+        fi
+        exec shardd-node "$$@"
+
+volumes:
+  postgres_data:

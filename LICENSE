@@ -1,0 +1,139 @@
+TQDM Source-Available License 1.0
+
+Copyright (c) 2026 TQDM Inc.
+
+1. Covered Material
+
+This License applies to all software and associated documentation made
+available in this repository, except for any file located under `sdks/` or
+`landing/` (the "Licensed Work").
+
+Files under `sdks/` and `landing/` are excluded from this License and remain
+subject to the MIT license files provided in those directories.
+
+2. Definitions
+
+"Affiliate" means any person or entity that directly or indirectly Controls,
+is Controlled by, or is under common Control with another person or entity.
+
+"Control" means the direct or indirect power to direct management, policies,
+or material business decisions, whether through ownership of voting interests,
+by contract, or otherwise. "Common Control" means Control by the same person,
+entity, or coordinated group of persons or entities.
+
+"Competing Offering" means any product, service, or feature made available to
+a third party on a hosted, managed, software-as-a-service, application
+programming interface, platform-as-a-service, embedded, OEM, or similar basis
+that uses, incorporates, embeds, is derived from, or provides access to the
+Licensed Work or a material portion of its functionality, and that
+substitutes for, competes with, or is marketed as a substitute for the
+Licensed Work or for any product or service the Licensor offers using the
+Licensed Work.
+
+"Gross Revenue" means total revenue from all sources, measured for you and
+your Affiliates on a consolidated basis using the accounting principles
+ordinarily applied in the normal course of business, applied consistently and
+without excluding Affiliates or shifting revenue among commonly controlled
+persons or entities to reduce the amount counted under this License.
+
+"Non-Production Use" means use solely for evaluation, development,
+integration, testing, continuous integration, quality assurance, staging,
+demonstrations, training, education, benchmarking, or security review or
+research, whether performed internally or for a specific customer, and not
+for running ordinary production workloads or providing a live production
+service to third parties.
+
+"Personnel" means natural persons performing services for you or any
+Affiliate, including employees and individual contractors, whether full-time,
+part-time, temporary, seasonal, or engaged through an agency or similar
+intermediary. Personnel is measured for you and your Affiliates on a
+consolidated basis as the average monthly number of such persons during the
+relevant fiscal year.
+
+"Production Use" means any use of the Licensed Work other than Non-Production
+Use, including use in a live environment for internal operations or to provide
+products or services to third parties.
+
+"Version" means each separately identified release, tag, or other public
+distribution of the Licensed Work first made available by Licensor. If
+Licensor makes public a snapshot of the Licensed Work without a release label,
+that public snapshot is its own Version.
+
+3. Grant of Rights
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of the Licensed Work to deal in the Licensed Work, including without
+limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Licensed Work, and to permit persons to
+whom the Licensed Work is furnished to do so, subject to the conditions
+below.
+
+Except for the rights expressly granted by this License, no other rights are
+granted.
+
+4. Permitted Use and Production Limits
+
+You may use the Licensed Work for Non-Production Use.
+
+You may use the Licensed Work for Production Use only if, at the time of that
+Production Use and measured across you and your Affiliates on a consolidated
+basis for the most recently completed fiscal year, all of the following are
+true:
+
+1. the Production Use is not part of a Competing Offering;
+2. Gross Revenue did not exceed US$10,000,000; and
+3. Personnel was fewer than 100.
+
+If there is no completed fiscal year yet for you or your Affiliates, apply
+the same test using a good-faith estimate for the current fiscal year on a
+consolidated basis.
+
+You may not avoid these limits by splitting activities, revenue, workforce,
+or ownership across multiple entities, holding companies, contractors, or
+other arrangements under common Control. The consolidated measurement rules in
+this License control.
+
+If any one of the conditions above is not satisfied, you may not engage in
+Production Use under this License. A separate commercial license from
+Licensor is required before any such Production Use.
+
+5. Notices
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Licensed Work.
+
+6. Trademarks
+
+This License does not grant any right to use the trade names, trademarks,
+service marks, or logos of Licensor or its Affiliates, except as reasonably
+necessary to reproduce the required notices and to identify Licensor as the
+owner of the Licensed Work.
+
+7. Future Apache 2.0 Changeover
+
+Each Version of the Licensed Work automatically changes over to the Apache
+License, Version 2.0, on the date that is four years after that Version's
+first public release or public distribution by Licensor.
+
+Before that date, this License governs that Version. On and after that date,
+you may use that Version under the Apache License, Version 2.0, instead of
+this License.
+
+Different Versions may therefore have different changeover dates.
+
+8. Termination
+
+If you violate this License, all rights granted to you under this License
+terminate automatically and immediately.
+
+Termination does not limit any other remedies available to Licensor.
+
+9. Disclaimer of Warranty and Limitation of Liability
+
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS
+IN THE LICENSED WORK.

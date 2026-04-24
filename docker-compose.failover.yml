@@ -1,0 +1,106 @@
+# Failover harness: 3 gateways + 3 nodes + 3 dbs, all on host ports
+# 8081/8082/8083. SDK failover tests point at all three and kill one
+# to verify the client transparently re-routes. No API auth — this
+# harness is local-only, never exposed.
+x-cluster-env: &cluster-env
+  SHARDD_CLUSTER_KEY: local-dev-insecure-cluster-key-do-not-use-in-prod
+
+# Every gateway advertises the full 3-edge directory so /gateway/edges
+# returns the list the SDK will probe. Base URLs use host.docker.internal
+# so the SDK (running on the host) can dial them.
+x-public-edges: &public-edges |
+  [{"edge_id":"local1","region":"local","base_url":"http://127.0.0.1:8081"},
+   {"edge_id":"local2","region":"local","base_url":"http://127.0.0.1:8082"},
+   {"edge_id":"local3","region":"local","base_url":"http://127.0.0.1:8083"}]
+
+services:
+  db1:
+    image: postgres:17-alpine
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    tmpfs: ["/var/lib/postgresql/data"]  # ephemeral — faster CI
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U shardd"], interval: 2s, retries: 10 }
+
+  db2:
+    image: postgres:17-alpine
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U shardd"], interval: 2s, retries: 10 }
+
+  db3:
+    image: postgres:17-alpine
+    environment: { POSTGRES_DB: shardd, POSTGRES_USER: shardd, POSTGRES_PASSWORD: shardd }
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U shardd"], interval: 2s, retries: 10 }
+
+  node1:
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    environment:
+      <<: *cluster-env
+      DATABASE_URL: "postgres://shardd:shardd@db1/shardd"
+    command: [--host=0.0.0.0, --libp2p-port=4001, --advertise-addr=/dns4/node1/tcp/4001, --database-url=postgres://shardd:shardd@db1/shardd]
+    depends_on: { db1: { condition: service_healthy } }
+
+  node2:
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    environment:
+      <<: *cluster-env
+      DATABASE_URL: "postgres://shardd:shardd@db2/shardd"
+    command: [--host=0.0.0.0, --libp2p-port=4002, --advertise-addr=/dns4/node2/tcp/4002, --database-url=postgres://shardd:shardd@db2/shardd, --bootstrap=/dns4/node1/tcp/4001]
+    depends_on:
+      db2: { condition: service_healthy }
+      node1: { condition: service_started }
+
+  node3:
+    build: { context: ., dockerfile: apps/node/Dockerfile }
+    environment:
+      <<: *cluster-env
+      DATABASE_URL: "postgres://shardd:shardd@db3/shardd"
+    command: [--host=0.0.0.0, --libp2p-port=4003, --advertise-addr=/dns4/node3/tcp/4003, --database-url=postgres://shardd:shardd@db3/shardd, --bootstrap=/dns4/node1/tcp/4001]
+    depends_on:
+      db3: { condition: service_healthy }
+      node1: { condition: service_started }
+
+  gateway1:
+    build: { context: ., dockerfile: apps/gateway/Dockerfile }
+    ports: ["8081:8080"]
+    environment:
+      <<: *cluster-env
+      SHARDD_PUBLIC_EDGE_ID: local1
+      SHARDD_PUBLIC_EDGE_REGION: local
+      SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8081
+      SHARDD_PUBLIC_EDGES_JSON: *public-edges
+    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node1/tcp/4001]
+    depends_on:
+      node1: { condition: service_started }
+      node2: { condition: service_started }
+      node3: { condition: service_started }
+
+  gateway2:
+    build: { context: ., dockerfile: apps/gateway/Dockerfile }
+    ports: ["8082:8080"]
+    environment:
+      <<: *cluster-env
+      SHARDD_PUBLIC_EDGE_ID: local2
+      SHARDD_PUBLIC_EDGE_REGION: local
+      SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8082
+      SHARDD_PUBLIC_EDGES_JSON: *public-edges
+    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node2/tcp/4002]
+    depends_on:
+      node1: { condition: service_started }
+      node2: { condition: service_started }
+      node3: { condition: service_started }
+
+  gateway3:
+    build: { context: ., dockerfile: apps/gateway/Dockerfile }
+    ports: ["8083:8080"]
+    environment:
+      <<: *cluster-env
+      SHARDD_PUBLIC_EDGE_ID: local3
+      SHARDD_PUBLIC_EDGE_REGION: local
+      SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8083
+      SHARDD_PUBLIC_EDGES_JSON: *public-edges
+    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node3/tcp/4003]
+    depends_on:
+      node1: { condition: service_started }
+      node2: { condition: service_started }
+      node3: { condition: service_started }

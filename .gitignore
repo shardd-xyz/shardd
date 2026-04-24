@@ -1,0 +1,42 @@
+/target
+node_modules/
+**/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+demo/
+infra/secrets/*
+!infra/secrets/.gitkeep
+infra/state/*.json
+infra/state/*.zone
+!infra/state/.gitkeep
+!infra/state/*.example.json
+infra/state/terraform/
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/.env
+.env
+infra/__pycache__/
+**/__pycache__/
+*.pyc
+
+# local-only operator / planning artifacts
+SYNC_GAP_INVESTIGATION.md
+workspace/
+
+# codex CLI session marker
+.codex
+
+# claude-code local session state
+.claude/
+
+# SDK build artifacts (Cargo.lock IS committed for reproducible CI publishes)
+sdks/rust/target/
+sdks/typescript/node_modules/
+sdks/typescript/dist/
+sdks/typescript/*.tsbuildinfo
+sdks/python/.venv/
+sdks/python/dist/
+sdks/python/build/
+sdks/python/*.egg-info/
+sdks/python/.pytest_cache/

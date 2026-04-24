@@ -1,0 +1,59 @@
+{
+  "name": "shardd",
+  "version": "0.1.0",
+  "description": "Official TypeScript client for shardd — a globally distributed credit ledger with automatic regional failover.",
+  "author": "shardd",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardd-xyz/shardd",
+    "directory": "sdks/typescript"
+  },
+  "homepage": "https://shardd.xyz",
+  "bugs": "https://github.com/shardd-xyz/shardd/issues",
+  "keywords": [
+    "shardd",
+    "ledger",
+    "credits",
+    "sdk",
+    "distributed"
+  ],
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:cjs:pkg",
+    "build:esm": "tsc -p tsconfig.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:cjs:pkg": "node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}, null, 2))\"",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "example:quickstart": "npm run build:esm && node --experimental-vm-modules dist/esm/examples/quickstart.js"
+  },
+  "dependencies": {
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
+}

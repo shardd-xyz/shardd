@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "deployments": {
+    "prod": {
+      "display_name": "shardd-prod",
+      "expected_aws_account_id": "123456789012",
+      "dns_root_zone": "example.com",
+      "cloudflare_zone_name": "example.com",
+      "cloudflare_zone_id_env": "CLOUDFLARE_ZONE_ID",
+      "cloudflare_account_id_env": "CLOUDFLARE_ACCOUNT_ID",
+      "cloudflare_api_token_env": "CLOUDFLARE_API_TOKEN",
+      "cloudflare_lb_enabled": true,
+      "cloudflare_lb_monitor": {
+        "method": "GET",
+        "path": "/gateway/health",
+        "port": 443,
+        "expected_codes": "200",
+        "timeout_seconds": 5,
+        "interval_seconds": 60,
+        "retries": 2
+      },
+      "edge_api_dns_name": "api.example.com",
+      "edge_api_machines": [
+        "shardd-prod-use1-edge",
+        "shardd-prod-ape1-edge",
+        "shardd-prod-euc1-edge"
+      ],
+      "public_edges": [
+        {
+          "edge_id": "use1",
+          "region": "us-east-1",
+          "base_url": "https://use1.api.example.com"
+        },
+        {
+          "edge_id": "ape1",
+          "region": "ap-east-1",
+          "base_url": "https://ape1.api.example.com"
+        },
+        {
+          "edge_id": "euc1",
+          "region": "eu-central-1",
+          "base_url": "https://euc1.api.example.com"
+        }
+      ],
+      "cluster_key_env": "SHARDD_CLUSTER_KEY",
+      "infra_ssh_public_key_path": "infra/secrets/prod-infra.pub",
+      "bootstrap_machine": "shardd-prod-use1-full",
+      "secret_env": {
+        "dashboard_machine_auth_secret": "SHARDD_DASHBOARD_MACHINE_AUTH_SECRET",
+        "dashboard_jwt_secret": "SHARDD_DASHBOARD_JWT_SECRET",
+        "dashboard_resend_api_key": "SHARDD_DASHBOARD_RESEND_API_KEY",
+        "tailscale_auth_key": "TAILSCALE_AUTH_KEY"
+      },
+      "image_registry": "100.104.178.26:5000",
+      "provider_defaults": {
+        "aws": {
+          "ami": "resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
+          "instance_type": "t3.small",
+          "volume_size_gb": 30
+        }
+      },
+      "machines": {
+        "shardd-prod-use1-full": {
+          "provider": "aws",
+          "region": "us-east-1",
+          "public_dns_name": "use1-full.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra"
+          },
+          "services": [
+            {
+              "bundle": "full-node",
+              "vars": {
+                "libp2p_port": 9000
+              }
+            }
+          ]
+        },
+        "shardd-prod-use1-edge": {
+          "provider": "aws",
+          "region": "us-east-1",
+          "public_dns_name": "use1.api.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra",
+            "instance_type": "t3.micro"
+          },
+          "services": [
+            {
+              "bundle": "edge-node",
+              "vars": {
+                "site_address": "use1.api.example.com",
+                "dashboard_url": "https://app.example.com",
+                "public_edge_id": "use1"
+              }
+            }
+          ]
+        },
+        "shardd-prod-ape1-full": {
+          "provider": "aws",
+          "region": "ap-east-1",
+          "public_dns_name": "ape1-full.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra"
+          },
+          "services": [
+            {
+              "bundle": "full-node",
+              "vars": {
+                "libp2p_port": 9000
+              }
+            }
+          ]
+        },
+        "shardd-prod-ape1-edge": {
+          "provider": "aws",
+          "region": "ap-east-1",
+          "public_dns_name": "ape1.api.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra",
+            "instance_type": "t3.micro"
+          },
+          "services": [
+            {
+              "bundle": "edge-node",
+              "vars": {
+                "site_address": "ape1.api.example.com",
+                "dashboard_url": "https://app.example.com",
+                "public_edge_id": "ape1"
+              }
+            }
+          ]
+        },
+        "shardd-prod-euc1-full": {
+          "provider": "aws",
+          "region": "eu-central-1",
+          "public_dns_name": "euc1-full.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra"
+          },
+          "services": [
+            {
+              "bundle": "full-node",
+              "vars": {
+                "libp2p_port": 9000
+              }
+            }
+          ]
+        },
+        "shardd-prod-euc1-edge": {
+          "provider": "aws",
+          "region": "eu-central-1",
+          "public_dns_name": "euc1.api.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra",
+            "instance_type": "t3.micro"
+          },
+          "services": [
+            {
+              "bundle": "edge-node",
+              "vars": {
+                "site_address": "euc1.api.example.com",
+                "dashboard_url": "https://app.example.com",
+                "public_edge_id": "euc1"
+              }
+            }
+          ]
+        },
+        "shardd-prod-use1-dashboard": {
+          "provider": "aws",
+          "region": "us-east-1",
+          "public_dns_name": "app.example.com",
+          "remote_root": "/opt/shardd",
+          "ssh": {
+            "user": "ubuntu",
+            "port": 22,
+            "identity_file": "infra/secrets/prod-infra"
+          },
+          "provider_config": {
+            "subnet_id": "subnet-CHANGE_ME",
+            "key_name": "shardd-prod-infra"
+          },
+          "services": [
+            {
+              "bundle": "dashboard",
+              "vars": {
+                "site_address": "app.example.com",
+                "app_origin": "https://app.example.com",
+                "admin_emails": "ops@example.com",
+                "email_from": "noreply@example.com"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

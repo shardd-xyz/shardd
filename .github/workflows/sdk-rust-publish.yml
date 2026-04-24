@@ -1,0 +1,32 @@
+name: sdk-rust-publish
+
+# Fires when `./run sdk:publish:rust <version>` creates and pushes a
+# tag of the form `sdk-rust-v<version>`. Builds, tests, dry-runs,
+# then publishes to crates.io using CRATES_IO_TOKEN.
+
+on:
+  push:
+    tags:
+      - "sdk-rust-v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdks/rust
+      - name: cargo test
+        run: cargo test
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
