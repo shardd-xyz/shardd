@@ -61,9 +61,7 @@ impl ShardError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            ShardError::ServiceUnavailable(_)
-                | ShardError::RequestTimeout
-                | ShardError::Network(_)
+            ShardError::ServiceUnavailable(_) | ShardError::RequestTimeout | ShardError::Network(_)
         )
     }
 }

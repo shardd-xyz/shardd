@@ -70,9 +70,9 @@ impl ClientBuilder {
         let api_key = self
             .api_key
             .ok_or_else(|| ShardError::InvalidInput("api_key is required".into()))?;
-        let bootstrap = self.edges.unwrap_or_else(|| {
-            DEFAULT_EDGES.iter().map(|s| s.to_string()).collect()
-        });
+        let bootstrap = self
+            .edges
+            .unwrap_or_else(|| DEFAULT_EDGES.iter().map(|s| s.to_string()).collect());
         let http = self.http.unwrap_or_else(|| {
             reqwest::Client::builder()
                 .timeout(Duration::from_millis(self.timeout_ms))
@@ -184,11 +184,7 @@ impl Client {
         bucket: &str,
         account: &str,
     ) -> Result<AccountDetail, ShardError> {
-        let path = format!(
-            "/collapsed/{}/{}",
-            urlencoded(bucket),
-            urlencoded(account)
-        );
+        let path = format!("/collapsed/{}/{}", urlencoded(bucket), urlencoded(account));
         self.request_json::<(), (), AccountDetail>(Method::GET, &path, None, None)
             .await
     }
@@ -200,9 +196,7 @@ impl Client {
         self.ensure_probed().await?;
         let live = self.inner.selector.live_urls();
         let Some(base) = live.first() else {
-            return Err(ShardError::ServiceUnavailable(
-                "no healthy edges".into(),
-            ));
+            return Err(ShardError::ServiceUnavailable("no healthy edges".into()));
         };
         let dir = fetch_directory(&self.inner.http, base).await?;
         Ok(dir.edges)
@@ -220,9 +214,7 @@ impl Client {
                     .live_urls()
                     .first()
                     .cloned()
-                    .ok_or_else(|| {
-                        ShardError::ServiceUnavailable("no healthy edges".into())
-                    })?
+                    .ok_or_else(|| ShardError::ServiceUnavailable("no healthy edges".into()))?
             }
         };
         let url = format!("{}/gateway/health", target.trim_end_matches('/'));
@@ -271,9 +263,7 @@ impl Client {
         }
         let urls = self.inner.selector.live_urls();
         if urls.is_empty() {
-            return Err(ShardError::ServiceUnavailable(
-                "all edges unhealthy".into(),
-            ));
+            return Err(ShardError::ServiceUnavailable("all edges unhealthy".into()));
         }
 
         // Try candidates in priority order, capped at 3. The cap

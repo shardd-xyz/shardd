@@ -8,8 +8,7 @@ use shardd::{Client, CreateEventOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("SHARDD_API_KEY")
-        .expect("set SHARDD_API_KEY in your environment");
+    let api_key = std::env::var("SHARDD_API_KEY").expect("set SHARDD_API_KEY in your environment");
     let bucket = std::env::var("SHARDD_BUCKET").unwrap_or_else(|_| "demo".into());
 
     let client = Client::new(api_key)?;
@@ -56,7 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Read back the bucket.
     let balances = client.get_balances(&bucket).await?;
     for row in &balances.accounts {
-        println!("  {} = {} (available {})", row.account, row.balance, row.available_balance);
+        println!(
+            "  {} = {} (available {})",
+            row.account, row.balance, row.available_balance
+        );
     }
 
     // 4. Inspect edge selection.

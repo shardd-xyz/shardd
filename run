@@ -131,6 +131,7 @@ cmd_build_ui() {
 
 cmd_fmt() {
     cargo fmt --all
+    cargo fmt --all --manifest-path sdks/rust/Cargo.toml
 }
 
 cmd_lint() {
@@ -268,7 +269,13 @@ _sdk_require_version() {
 }
 
 cmd_sdk_test_rust() {
-    (cd sdks/rust && cargo build && cargo test "$@")
+    (
+        cd sdks/rust &&
+        cargo fmt --check &&
+        cargo clippy --all-targets -- -D warnings &&
+        cargo test "$@" &&
+        cargo publish --dry-run --allow-dirty
+    )
 }
 
 cmd_sdk_test_ts() {

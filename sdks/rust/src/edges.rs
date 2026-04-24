@@ -146,12 +146,14 @@ impl EdgeSelector {
     pub(crate) async fn probe_all(&self, http: &reqwest::Client) -> Result<(), ShardError> {
         let urls: Vec<String> = {
             let guard = self.inner.lock().unwrap();
-            guard.candidates.iter().map(|c| c.base_url.clone()).collect()
+            guard
+                .candidates
+                .iter()
+                .map(|c| c.base_url.clone())
+                .collect()
         };
         if urls.is_empty() {
-            return Err(ShardError::ServiceUnavailable(
-                "no edges configured".into(),
-            ));
+            return Err(ShardError::ServiceUnavailable("no edges configured".into()));
         }
         let probes = urls.iter().map(|url| probe_one(http, url.clone()));
         let results = join_all(probes).await;
@@ -177,14 +179,16 @@ impl EdgeSelector {
         // Sort: already-cool last, then ascending RTT. Candidates with
         // no RTT (probe failed or not yet measured) come after those
         // with a measured RTT.
-        guard.candidates.sort_by(|a, b| match (a.is_cool(now), b.is_cool(now)) {
-            (false, true) => std::cmp::Ordering::Less,
-            (true, false) => std::cmp::Ordering::Greater,
-            _ => a
-                .rtt_ms
-                .unwrap_or(u64::MAX)
-                .cmp(&b.rtt_ms.unwrap_or(u64::MAX)),
-        });
+        guard
+            .candidates
+            .sort_by(|a, b| match (a.is_cool(now), b.is_cool(now)) {
+                (false, true) => std::cmp::Ordering::Less,
+                (true, false) => std::cmp::Ordering::Greater,
+                _ => a
+                    .rtt_ms
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.rtt_ms.unwrap_or(u64::MAX)),
+            });
         Ok(())
     }
 }

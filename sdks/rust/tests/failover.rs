@@ -28,7 +28,11 @@ fn gateways() -> Option<Vec<String>> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        if parts.is_empty() { None } else { Some(parts) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts)
+        }
     })
 }
 
@@ -56,7 +60,7 @@ async fn all_healthy_probe_picks_one_and_writes_succeed() {
         )
         .await
         .expect("create_event should succeed with all edges healthy");
-    assert_eq!(first.deduplicated, false, "first write is not a retry");
+    assert!(!first.deduplicated, "first write is not a retry");
 
     // Replay with the same nonce — must dedupe even though the SDK
     // may pin a different edge on this call.
@@ -101,7 +105,7 @@ async fn closed_port_mixed_in_is_skipped_by_probe() {
         )
         .await
         .expect("SDK must skip the dead URL and pick a healthy edge");
-    assert_eq!(result.deduplicated, false);
+    assert!(!result.deduplicated);
 }
 
 #[tokio::test]
@@ -135,7 +139,7 @@ async fn single_survivor_still_succeeds() {
         )
         .await
         .expect("write must route to the only healthy edge");
-    assert_eq!(result.deduplicated, false);
+    assert!(!result.deduplicated);
 }
 
 /// Executed only when the harness stopped one of the three gateways
@@ -167,5 +171,5 @@ async fn mid_test_outage_does_not_break_writes() {
         )
         .await
         .expect("write must fail over from the killed edge");
-    assert_eq!(result.deduplicated, false);
+    assert!(!result.deduplicated);
 }
