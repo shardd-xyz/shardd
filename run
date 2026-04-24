@@ -303,11 +303,7 @@ cmd_sdk_test_failover() {
     local compose_file="docker-compose.failover.yml"
     local gateways="http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083"
 
-    teardown() {
-        echo "--- tearing down failover harness ---"
-        docker compose -f "$compose_file" down -v --remove-orphans
-    }
-    trap teardown EXIT INT TERM
+    trap 'echo "--- tearing down failover harness ---"; docker compose -f "'"$compose_file"'" down -v --remove-orphans' EXIT INT TERM
 
     echo "--- pre-flight: ensure SDK build dirs are ready ---"
     (cd sdks/typescript && [ -d node_modules ] || npm install --no-audit --no-fund) >/dev/null
@@ -315,8 +311,33 @@ cmd_sdk_test_failover() {
     (cd sdks/python && [ -d .venv ] || python3 -m venv .venv) >/dev/null
     (cd sdks/python && .venv/bin/pip install -q -e ".[dev]") >/dev/null
 
-    echo "--- building + starting failover harness (3 gateways, 3 nodes) ---"
-    docker compose -f "$compose_file" up -d --build
+    echo "--- building + starting failover nodes (3 nodes, 3 dbs) ---"
+    docker compose -f "$compose_file" up -d --build db1 db2 db3 node1 node2 node3
+
+    # The gateway mesh client only dials each bootstrap address once on startup.
+    # In CI, `service_started` was enough for compose to launch gateways before
+    # their bootstrap nodes were actually ready, which stranded a gateway with no
+    # discovered peers for the rest of the run. Wait for every node to log its
+    # ready transition before starting gateways.
+    echo "--- waiting for all 3 nodes to report ready ---"
+    local node_deadline=$(( $(date +%s) + 180 ))
+    for node in node1 node2 node3; do
+        while true; do
+            if [ "$(date +%s)" -gt "$node_deadline" ]; then
+                echo "timed out waiting for $node to become ready"
+                docker compose -f "$compose_file" logs --tail=80
+                exit 1
+            fi
+            if docker compose -f "$compose_file" logs --no-color "$node" 2>/dev/null | grep -q "node ready"; then
+                echo "  $node ready"
+                break
+            fi
+            sleep 1
+        done
+    done
+
+    echo "--- building + starting failover gateways (3 gateways) ---"
+    docker compose -f "$compose_file" up -d --build --no-deps gateway1 gateway2 gateway3
 
     # Wait until every gateway reports ready=true at least once. The
     # gateway's mesh refresh flaps healthy_nodes 3↔0 every ~5s, which

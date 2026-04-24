@@ -69,7 +69,12 @@ services:
       SHARDD_PUBLIC_EDGE_REGION: local
       SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8081
       SHARDD_PUBLIC_EDGES_JSON: *public-edges
-    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node1/tcp/4001]
+    command:
+      - --host=0.0.0.0
+      - --port=8080
+      - --bootstrap-peer=/dns4/node1/tcp/4001
+      - --bootstrap-peer=/dns4/node2/tcp/4002
+      - --bootstrap-peer=/dns4/node3/tcp/4003
     depends_on:
       node1: { condition: service_started }
       node2: { condition: service_started }
@@ -84,7 +89,12 @@ services:
       SHARDD_PUBLIC_EDGE_REGION: local
       SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8082
       SHARDD_PUBLIC_EDGES_JSON: *public-edges
-    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node2/tcp/4002]
+    command:
+      - --host=0.0.0.0
+      - --port=8080
+      - --bootstrap-peer=/dns4/node1/tcp/4001
+      - --bootstrap-peer=/dns4/node2/tcp/4002
+      - --bootstrap-peer=/dns4/node3/tcp/4003
     depends_on:
       node1: { condition: service_started }
       node2: { condition: service_started }
@@ -99,7 +109,12 @@ services:
       SHARDD_PUBLIC_EDGE_REGION: local
       SHARDD_PUBLIC_BASE_URL: http://127.0.0.1:8083
       SHARDD_PUBLIC_EDGES_JSON: *public-edges
-    command: [--host=0.0.0.0, --port=8080, --bootstrap-peer=/dns4/node3/tcp/4003]
+    command:
+      - --host=0.0.0.0
+      - --port=8080
+      - --bootstrap-peer=/dns4/node1/tcp/4001
+      - --bootstrap-peer=/dns4/node2/tcp/4002
+      - --bootstrap-peer=/dns4/node3/tcp/4003
     depends_on:
       node1: { condition: service_started }
       node2: { condition: service_started }
