@@ -23,10 +23,11 @@ cargo install shardd-cli
 
 The binary lands at `~/.cargo/bin/shardd`.
 
-> **Status**: 0.0.1 is a scaffold. The full subcommand surface (auth,
-> events, balances, accounts, buckets, keys, profile, billing, edges,
-> health) lands in 0.1.0 — track progress at
-> [github.com/shardd-xyz/shardd/issues](https://github.com/shardd-xyz/shardd/issues).
+> **0.1.0** is the first release with the full surface (auth, events,
+> balances, accounts, buckets, keys, profile, billing, edges, health).
+> Browser device-flow auth lands an API key at
+> `~/.config/shardd/credentials.toml`; subsequent commands speak HTTPS
+> to the dashboard's `/api/developer/*` and `/api/auth/cli/*` endpoints.
 
 ## License
 

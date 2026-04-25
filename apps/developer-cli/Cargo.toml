@@ -1,6 +1,6 @@
 [package]
 name = "shardd-cli"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 # Customer-facing CLI is MIT, matching the published SDK. The rest of
 # the workspace is TQDM-SAL-1.0; this crate overrides the workspace
