@@ -1,0 +1,29 @@
+name: cli-publish
+
+# Publishing is done from the operator machine via `./run
+# sdk:publish:cli <version>`. This workflow is manual-only to avoid
+# accidental registry publishes from GitHub Actions.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/customer-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/customer-cli
+      - name: cargo test
+        run: cargo test
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish

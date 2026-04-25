@@ -86,3 +86,23 @@ jobs:
           java-version: "21"
           cache: gradle
       - run: ./gradlew --no-daemon test publishToMavenLocal
+
+  cli:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/customer-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/customer-cli
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run

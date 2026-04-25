@@ -332,8 +332,18 @@ cmd_sdk_test_kotlin() {
     )
 }
 
+cmd_sdk_test_cli() {
+    (
+        cd apps/customer-cli &&
+        cargo fmt --check &&
+        cargo clippy --all-targets -- -D warnings &&
+        cargo test "$@" &&
+        cargo publish --dry-run --allow-dirty
+    )
+}
+
 cmd_sdk_test() {
-    cmd_sdk_test_rust && cmd_sdk_test_ts && cmd_sdk_test_python && cmd_sdk_test_kotlin
+    cmd_sdk_test_rust && cmd_sdk_test_ts && cmd_sdk_test_python && cmd_sdk_test_kotlin && cmd_sdk_test_cli
 }
 
 # Spin up the 3-gateway docker harness, run every SDK's failover test
@@ -485,6 +495,25 @@ cmd_sdk_publish_ts() {
     echo "published shardd@$version to npm"
 }
 
+cmd_sdk_publish_cli() {
+    local version="$1"
+    _sdk_require_version cli "$version"
+    # Bump version = "x.y.z" (first occurrence) in apps/customer-cli/Cargo.toml.
+    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" apps/customer-cli/Cargo.toml
+    (
+        cd apps/customer-cli &&
+        cargo build &&
+        cargo test
+    )
+    (cd apps/customer-cli && cargo publish --dry-run --allow-dirty)
+    echo
+    echo "about to publish apps/customer-cli (shardd-cli) v$version to crates.io"
+    echo "this is permanent and cannot be overwritten"
+    (cd apps/customer-cli && cargo publish --allow-dirty)
+    echo
+    echo "published shardd-cli v$version to crates.io — try cargo install shardd-cli"
+}
+
 cmd_sdk_publish_kotlin() {
     local version="$1"
     _sdk_require_version kotlin "$version"
@@ -592,15 +621,17 @@ Deploy:
   infra:ctl [args]   Pass through to ./infra/infractl.py
 
 SDKs:
-  sdk:test                   Build + test all four SDKs (rust, ts, python, kotlin)
+  sdk:test                   Build + test all SDKs (rust, ts, python, kotlin, cli)
   sdk:test:rust              Build + test sdks/rust
   sdk:test:ts                Install + build + test sdks/typescript
   sdk:test:python            Install + test sdks/python (creates .venv)
   sdk:test:kotlin            Build + test sdks/kotlin and publish to Maven local
+  sdk:test:cli               fmt + clippy + test + publish-dry-run on apps/customer-cli
   sdk:publish:rust <version> Bump sdks/rust version, test, publish locally to crates.io
   sdk:publish:ts <version>   Bump sdks/typescript version, test, publish locally to npm
   sdk:publish:python <ver>   Bump sdks/python version, test, publish locally to PyPI
   sdk:publish:kotlin <ver>   Bump sdks/kotlin version, test, publish locally to Maven Central
+  sdk:publish:cli <version>  Bump apps/customer-cli version, test, publish locally to crates.io
   sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
 
 Other:
@@ -643,10 +674,12 @@ case "${1:-help}" in
     sdk:test:ts)    shift || true; cmd_sdk_test_ts "$@" ;;
     sdk:test:python) shift || true; cmd_sdk_test_python "$@" ;;
     sdk:test:kotlin) shift || true; cmd_sdk_test_kotlin "$@" ;;
+    sdk:test:cli)    shift || true; cmd_sdk_test_cli "$@" ;;
     sdk:publish:rust)   shift || true; cmd_sdk_publish_rust "$@" ;;
     sdk:publish:ts)     shift || true; cmd_sdk_publish_ts "$@" ;;
     sdk:publish:python) shift || true; cmd_sdk_publish_python "$@" ;;
     sdk:publish:kotlin) shift || true; cmd_sdk_publish_kotlin "$@" ;;
+    sdk:publish:cli)    shift || true; cmd_sdk_publish_cli "$@" ;;
     sdk:test:failover)  shift || true; cmd_sdk_test_failover "$@" ;;
     hooks:install)  cmd_hooks_install ;;
     clean)          cmd_clean ;;
