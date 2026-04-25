@@ -1,6 +1,7 @@
 use crate::{adapters::persistence::PostgresPersistence, infra::db::init_db};
 
 pub mod app;
+pub mod cli_auth;
 pub mod config;
 pub mod db;
 pub mod magic_links;

@@ -8,6 +8,7 @@ use crate::{
     use_cases::{
         audit::AuditLogRepo,
         buckets_registry::BucketRegistry,
+        cli_auth::CliAuthUseCases,
         developer_auth::{DeveloperAuthRepo, DeveloperAuthUseCases},
         user::{AuthUseCases, UserRepo},
     },
@@ -19,6 +20,7 @@ pub struct AppState {
     pub edge_http: reqwest::Client,
     pub auth_use_cases: Arc<AuthUseCases>,
     pub developer_auth_use_cases: Arc<DeveloperAuthUseCases>,
+    pub cli_auth_use_cases: Arc<CliAuthUseCases>,
     pub user_repo: Arc<dyn UserRepo>,
     pub audit_repo: Arc<dyn AuditLogRepo>,
     pub developer_auth_repo: Arc<dyn DeveloperAuthRepo>,

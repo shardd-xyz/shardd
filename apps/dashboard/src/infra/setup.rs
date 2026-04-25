@@ -1,12 +1,13 @@
 use crate::{
     adapters::{email::resend::ResendEmailSender, http::app_state::AppState},
     infra::{
-        config::AppConfig, magic_links::MagicLinkStore, postgres_persistence,
-        rate_limit::RateLimiter,
+        cli_auth::CliAuthStore, config::AppConfig, magic_links::MagicLinkStore,
+        postgres_persistence, rate_limit::RateLimiter,
     },
     use_cases::{
         audit::AuditLogRepo,
         buckets_registry::BucketRegistry,
+        cli_auth::{CliAuthStore as CliAuthStoreTrait, CliAuthUseCases},
         developer_auth::{DeveloperAuthRepo, DeveloperAuthUseCases},
         user::{AuthUseCases, UserRepo},
     },
@@ -50,16 +51,26 @@ pub async fn init_app_state() -> anyhow::Result<AppState> {
         email.clone(),
         config.app_origin.to_string(),
     );
-    let developer_auth_use_cases = DeveloperAuthUseCases::new(
+    let developer_auth_use_cases = Arc::new(DeveloperAuthUseCases::new(
         developer_auth_repo_arc.clone(),
         config.machine_auth_positive_cache_ttl_ms,
-    );
+    ));
+
+    let cli_auth_store =
+        Arc::new(CliAuthStore::new(&config.redis_url).await?) as Arc<dyn CliAuthStoreTrait>;
+    let cli_auth_use_cases = Arc::new(CliAuthUseCases::new(
+        cli_auth_store,
+        developer_auth_use_cases.clone(),
+        user_repo_arc.clone(),
+        config.app_origin.to_string(),
+    ));
 
     Ok(AppState {
         config: Arc::new(config),
         edge_http,
         auth_use_cases: Arc::new(auth_use_cases),
-        developer_auth_use_cases: Arc::new(developer_auth_use_cases),
+        developer_auth_use_cases,
+        cli_auth_use_cases,
         user_repo: user_repo_arc,
         audit_repo: audit_repo_arc,
         developer_auth_repo: developer_auth_repo_arc,

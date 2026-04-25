@@ -14,10 +14,13 @@ use time;
 use uuid::Uuid;
 
 use crate::{
-    adapters::http::app_state::AppState,
+    adapters::http::{app_state::AppState, extractors::CurrentUser},
     app_error::{AppError, AppResult},
     application::jwt,
-    use_cases::user::AuthUseCases,
+    use_cases::{
+        cli_auth::{CliAuthAuthorizeResponse, CliAuthExchangeResponse, CliAuthStartResponse},
+        user::AuthUseCases,
+    },
 };
 
 #[derive(Deserialize)]
@@ -38,6 +41,9 @@ pub fn router() -> Router<AppState> {
         .route("/logout", post(logout))
         .route("/google", get(google_redirect))
         .route("/google/callback", get(google_callback))
+        .route("/cli/start", post(cli_start))
+        .route("/cli/authorize", post(cli_authorize))
+        .route("/cli/exchange", post(cli_exchange))
 }
 
 async fn request(
@@ -349,6 +355,71 @@ async fn google_callback(
     }
     headers.insert(header::LOCATION, "/dashboard".parse().unwrap());
     (StatusCode::FOUND, headers).into_response()
+}
+
+// ── CLI device-flow ──────────────────────────────────────────────────
+//
+// Three endpoints, each rate-limited via the existing per-IP/per-email
+// middleware. Full design lives in
+// `application/use_cases/cli_auth.rs`.
+
+#[derive(Deserialize)]
+struct CliStartPayload {
+    /// Free-form, e.g. `shardd-cli/0.1.0`. Echoed back on the
+    /// authorize page so the user can recognise the requesting tool.
+    #[serde(default)]
+    client_name: Option<String>,
+    /// The host running the CLI, e.g. `alice-laptop`. Echoed on the
+    /// authorize page; also used as the issued API key's `name`.
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
+async fn cli_start(
+    State(state): State<AppState>,
+    Json(payload): Json<CliStartPayload>,
+) -> AppResult<Json<CliAuthStartResponse>> {
+    let client_name = payload.client_name.as_deref().unwrap_or("shardd-cli");
+    let hostname = payload.hostname.as_deref().unwrap_or("unknown");
+    let response = state
+        .cli_auth_use_cases
+        .start(client_name, hostname)
+        .await?;
+    Ok(Json(response))
+}
+
+#[derive(Deserialize)]
+struct CliAuthorizePayload {
+    session_id: String,
+}
+
+async fn cli_authorize(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    Json(payload): Json<CliAuthorizePayload>,
+) -> AppResult<Json<CliAuthAuthorizeResponse>> {
+    let response = state
+        .cli_auth_use_cases
+        .authorize(user.id, &payload.session_id)
+        .await?;
+    Ok(Json(response))
+}
+
+#[derive(Deserialize)]
+struct CliExchangePayload {
+    session_id: String,
+    verification_code: String,
+}
+
+async fn cli_exchange(
+    State(state): State<AppState>,
+    Json(payload): Json<CliExchangePayload>,
+) -> AppResult<Json<CliAuthExchangeResponse>> {
+    let response = state
+        .cli_auth_use_cases
+        .exchange(&payload.session_id, &payload.verification_code)
+        .await?;
+    Ok(Json(response))
 }
 
 fn ensure_login_session(jar: CookieJar, ttl_minutes: i64) -> (CookieJar, String) {

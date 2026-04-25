@@ -4,15 +4,17 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     routing::{delete, patch, post},
 };
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::extract::cookie::{Cookie, SameSite};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
 use time;
 
 use crate::{
-    adapters::http::app_state::AppState,
+    adapters::http::{
+        app_state::AppState,
+        extractors::{Authenticated, CurrentUser},
+    },
     app_error::{AppError, AppResult},
-    application::jwt,
     use_cases::buckets_registry::BucketStatusFilter,
 };
 
@@ -25,11 +27,13 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn delete_account(
+    // Cookie-only — account deletion must require a fresh browser
+    // session, never an API key, even one issued by the same user.
+    CurrentUser(user): CurrentUser,
     State(app_state): State<AppState>,
     headers: HeaderMap,
-    jar: CookieJar,
 ) -> AppResult<(StatusCode, HeaderMap)> {
-    let (_, user_id) = current_user(&jar, &app_state)?;
+    let user_id = user.id;
     let lang = headers
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
@@ -86,11 +90,11 @@ impl From<crate::use_cases::user::UserProfile> for ProfileDto {
 }
 
 async fn update_profile(
+    Authenticated(user): Authenticated,
     State(app_state): State<AppState>,
-    jar: CookieJar,
     Json(body): Json<UpdateProfileRequest>,
 ) -> AppResult<Json<ProfileDto>> {
-    let (_, user_id) = current_user(&jar, &app_state)?;
+    let user_id = user.id;
     if let Some(name) = body.display_name.as_deref() {
         app_state
             .user_repo
@@ -113,10 +117,10 @@ async fn update_profile(
 /// button. Bucket events intentionally excluded — the mesh is append-only
 /// and that's where the auditable record lives.
 async fn export_user_data(
+    Authenticated(user): Authenticated,
     State(app_state): State<AppState>,
-    jar: CookieJar,
 ) -> AppResult<Json<serde_json::Value>> {
-    let (_, user_id) = current_user(&jar, &app_state)?;
+    let user_id = user.id;
     let user = app_state
         .user_repo
         .get_profile_by_id(user_id)
@@ -179,11 +183,11 @@ struct ContactRequest {
 /// inbox. Replaces the old mailto:emil@tqdm.org Enterprise link so people
 /// don't have to leave the app (or reveal the personal address).
 async fn send_contact(
+    Authenticated(user): Authenticated,
     State(app_state): State<AppState>,
-    jar: CookieJar,
     Json(body): Json<ContactRequest>,
 ) -> AppResult<StatusCode> {
-    let (_, user_id) = current_user(&jar, &app_state)?;
+    let user_id = user.id;
     if body.message.trim().is_empty() {
         return Err(AppError::InvalidInput("message is required".into()));
     }
@@ -249,14 +253,4 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn current_user(jar: &CookieJar, app_state: &AppState) -> AppResult<(CookieJar, uuid::Uuid)> {
-    let Some(access_cookie) = jar.get("access_token") else {
-        return Err(crate::app_error::AppError::InvalidCredentials);
-    };
-    let claims = jwt::verify(access_cookie.value(), &app_state.config.jwt_secret)?;
-    let user_id = uuid::Uuid::parse_str(&claims.sub)
-        .map_err(|_| crate::app_error::AppError::InvalidCredentials)?;
-    Ok((jar.clone(), user_id))
 }

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use url::form_urlencoded::{Serializer, byte_serialize};
 
 use crate::{
-    adapters::http::{app_state::AppState, extractors::CurrentUser},
+    adapters::http::{app_state::AppState, extractors::Authenticated},
     app_error::{AppError, AppResult},
     infra::config::PublicEdgeConfig,
     use_cases::buckets_registry::{BucketStatusFilter, OwnedBucket, validate_bucket_name},
@@ -56,7 +56,7 @@ struct PurgeBucketQuery {
 /// `developer_buckets` row is also archived so the UI hides it
 /// immediately.
 async fn purge_bucket(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(bucket): Path<String>,
     Query(query): Query<PurgeBucketQuery>,
@@ -132,7 +132,7 @@ impl From<OwnedBucket> for CreatedBucketDto {
 }
 
 async fn create_bucket(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Json(req): Json<CreateBucketRequest>,
 ) -> AppResult<(StatusCode, Json<CreatedBucketDto>)> {
@@ -143,7 +143,7 @@ async fn create_bucket(
 }
 
 async fn archive_bucket(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(bucket): Path<String>,
 ) -> AppResult<StatusCode> {
@@ -188,7 +188,7 @@ struct EventsQuery {
 }
 
 async fn list_events(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Query(q): Query<EventsQuery>,
 ) -> AppResult<Response> {
@@ -376,7 +376,7 @@ struct EdgeHealth {
 }
 
 async fn list_buckets(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Query(query): Query<BucketsQuery>,
 ) -> AppResult<Response> {
@@ -499,7 +499,7 @@ async fn list_buckets(
 }
 
 async fn get_bucket_detail(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(bucket): Path<String>,
 ) -> AppResult<Response> {
@@ -517,7 +517,7 @@ async fn get_bucket_detail(
 }
 
 async fn list_bucket_events(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(bucket): Path<String>,
     Query(query): Query<BucketEventsQuery>,
@@ -541,7 +541,7 @@ async fn list_bucket_events(
 }
 
 async fn create_bucket_event(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(bucket): Path<String>,
     Json(request): Json<CreateBucketEventRequest>,

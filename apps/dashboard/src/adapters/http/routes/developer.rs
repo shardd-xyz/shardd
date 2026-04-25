@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    adapters::http::{app_state::AppState, extractors::CurrentUser},
+    adapters::http::{app_state::AppState, extractors::Authenticated},
     app_error::{AppError, AppResult},
     use_cases::{
         developer_auth::{
@@ -55,14 +55,14 @@ struct CreateScopeRequest {
 }
 
 async fn me(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
 ) -> AppResult<Json<DeveloperAccount>> {
     Ok(Json(owned_account(&state, &user).await?))
 }
 
 async fn list_keys(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
 ) -> AppResult<Json<Vec<DeveloperApiKey>>> {
     let account = owned_account(&state, &user).await?;
@@ -72,7 +72,7 @@ async fn list_keys(
 }
 
 async fn create_key(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Json(request): Json<CreateKeyRequest>,
 ) -> AppResult<(StatusCode, Json<IssuedKeyResponse>)> {
@@ -99,7 +99,7 @@ async fn create_key(
 }
 
 async fn revoke_key(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<StatusCode> {
@@ -110,7 +110,7 @@ async fn revoke_key(
 }
 
 async fn rotate_key(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<(StatusCode, Json<IssuedKeyResponse>)> {
@@ -121,7 +121,7 @@ async fn rotate_key(
 }
 
 async fn list_scopes(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<Vec<DeveloperApiKeyScope>>> {
@@ -131,7 +131,7 @@ async fn list_scopes(
 }
 
 async fn create_scope(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(request): Json<CreateScopeRequest>,
@@ -154,7 +154,7 @@ async fn create_scope(
 }
 
 async fn delete_scope(
-    CurrentUser(user): CurrentUser,
+    Authenticated(user): Authenticated,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<StatusCode> {
