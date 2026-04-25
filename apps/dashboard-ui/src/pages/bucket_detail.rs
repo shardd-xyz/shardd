@@ -522,6 +522,25 @@ fn QuickstartSnippet(bucket: String) -> Element {
                 code { class: "text-accent-100", "{bucket}" }
                 " from curl, Rust, Python, TypeScript, or Kotlin. The quickstart has copy-pasteable examples in every language; pick a tab and the choice sticks across pages."
             }
+            p { class: "text-base-500 text-[13px] leading-[160%] m-0",
+                "Wiring an AI agent? Paste the "
+                a {
+                    href: "https://shardd.xyz/guide/ai-agent-setup",
+                    target: "_blank",
+                    rel: "noopener",
+                    class: "text-accent-100 hover:text-fg no-underline",
+                    "drop-in prompt"
+                }
+                ", or feed it "
+                a {
+                    href: "https://shardd.xyz/llms-full.txt",
+                    target: "_blank",
+                    rel: "noopener",
+                    class: "text-accent-100 hover:text-fg no-underline",
+                    "llms-full.txt"
+                }
+                " as context."
+            }
             div { class: "flex flex-wrap gap-4 items-center text-base-500 font-mono text-[12px]",
                 span { "Get an API key at " Link { to: Route::Keys, class: "text-accent-100 hover:text-fg no-underline", "/keys" } "." }
                 a {
@@ -537,6 +556,13 @@ fn QuickstartSnippet(bucket: String) -> Element {
                     rel: "noopener",
                     class: "text-base-500 hover:text-fg transition-colors duration-150 no-underline",
                     "SDKs \u{2197}"
+                }
+                a {
+                    href: "https://shardd.xyz/llms.txt",
+                    target: "_blank",
+                    rel: "noopener",
+                    class: "text-base-500 hover:text-fg transition-colors duration-150 no-underline",
+                    "llms.txt \u{2197}"
                 }
             }
         }
