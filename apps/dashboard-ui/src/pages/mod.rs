@@ -8,6 +8,7 @@ pub mod admin_users;
 pub mod billing;
 pub mod bucket_detail;
 pub mod buckets;
+pub mod cli_authorize;
 pub mod contact;
 pub mod dashboard;
 pub mod developer_events;

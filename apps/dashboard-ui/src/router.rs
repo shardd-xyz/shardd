@@ -8,6 +8,7 @@ use crate::pages::admin_users::AdminUsers;
 use crate::pages::billing::Billing;
 use crate::pages::bucket_detail::BucketDetail;
 use crate::pages::buckets::Buckets;
+use crate::pages::cli_authorize::CliAuthorize;
 use crate::pages::contact::Contact;
 use crate::pages::dashboard::Dashboard;
 use crate::pages::developer_events::Events;
@@ -28,6 +29,8 @@ pub enum Route {
     Tos,
     #[route("/privacy")]
     Privacy,
+    #[route("/cli-authorize")]
+    CliAuthorize,
     #[layout(Shell)]
     #[route("/dashboard")]
     Dashboard,
