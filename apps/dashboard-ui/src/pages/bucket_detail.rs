@@ -1,7 +1,6 @@
 use crate::api;
 use crate::components::badge::{Badge, BadgeTone};
 use crate::components::button::{Btn, BtnSize, BtnVariant};
-use crate::components::copy_button::CopyButton;
 use crate::components::event_card::EventCard;
 use crate::components::meta_row::{MetaRow, MetaRowCode};
 use crate::components::pagination::Pagination;
@@ -506,45 +505,38 @@ fn WriteEventForm(bucket: String, on_written: EventHandler<()>) -> Element {
     }
 }
 
-/// "Write your first event" snippet. Pre-fills the user's nearest public edge
-/// (from /api/developer/edges) and the current bucket name; API key is a
-/// `$SHARDD_API_KEY` placeholder the dev fills in. Text is a close mirror of
-/// shardd.xyz/guide/quickstart so docs + dashboard stay in sync.
+/// "Write your first event" pointer. The full copy-pasteable examples in every
+/// supported language (curl / Rust / Python / TypeScript / Kotlin) live on
+/// shardd.xyz/guide/quickstart; the dashboard just links out so the docs stay
+/// the single source of truth.
 #[component]
 fn QuickstartSnippet(bucket: String) -> Element {
-    let edges = use_resource(|| async { api::buckets::list_edges().await.unwrap_or_default() });
-    let edges_read = edges.read();
-    let edge_url = edges_read
-        .as_ref()
-        .and_then(|list| list.first())
-        .map(|e| e.base_url.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| "https://use1.api.shardd.xyz".to_string());
-
-    let curl = format!(
-        "curl -sS {edge}/events \\\n  -H \"Authorization: Bearer $SHARDD_API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{{\"bucket\":\"{bucket}\",\"account\":\"alice\",\"amount\":100,\"note\":\"top-up\"}}'",
-        edge = edge_url
-    );
-
     rsx! {
         section { class: "rounded-lg border border-base-800 bg-base-900 p-6 grid gap-3",
-            div { class: "flex justify-between items-start flex-wrap gap-2",
-                div { class: "grid gap-1",
-                    span { class: "text-accent-100 text-xs uppercase tracking-widest", "Get started" }
-                    h2 { class: "text-[16px] font-normal", "Write your first event" }
-                }
-                CopyButton { value: curl.clone(), label: Some("Copy curl".to_string()) }
+            div { class: "grid gap-1",
+                span { class: "text-accent-100 text-xs uppercase tracking-widest", "Get started" }
+                h2 { class: "text-[16px] font-normal", "Write your first event" }
             }
-            pre { class: "p-4 rounded-lg bg-base-1000 border border-base-800 font-mono text-[13px] text-base-300 overflow-x-auto leading-[160%] m-0",
-                "{curl}"
+            p { class: "text-base-400 text-[14px] leading-[160%] m-0",
+                "Write to "
+                code { class: "text-accent-100", "{bucket}" }
+                " from curl, Rust, Python, TypeScript, or Kotlin. The quickstart has copy-pasteable examples in every language; pick a tab and the choice sticks across pages."
             }
             div { class: "flex flex-wrap gap-4 items-center text-base-500 font-mono text-[12px]",
-                span { "Set " code { class: "text-accent-100", "SHARDD_API_KEY" } " to a key from " Link { to: Route::Keys, class: "text-accent-100 hover:text-fg no-underline", "/keys" } "." }
+                span { "Get an API key at " Link { to: Route::Keys, class: "text-accent-100 hover:text-fg no-underline", "/keys" } "." }
                 a {
                     href: "https://shardd.xyz/guide/quickstart",
                     target: "_blank",
                     rel: "noopener",
                     class: "text-base-500 hover:text-fg transition-colors duration-150 no-underline ml-auto",
-                    "Full quickstart \u{2197}"
+                    "Quickstart \u{2197}"
+                }
+                a {
+                    href: "https://shardd.xyz/guide/sdks",
+                    target: "_blank",
+                    rel: "noopener",
+                    class: "text-base-500 hover:text-fg transition-colors duration-150 no-underline",
+                    "SDKs \u{2197}"
                 }
             }
         }
