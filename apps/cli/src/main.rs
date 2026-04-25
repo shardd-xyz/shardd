@@ -1,6 +1,6 @@
 //! shardd-opctl — operator-only libp2p mesh client. Talks the private mesh
-//! protocol directly; needs the cluster PSK to dial. Not for customers — the
-//! customer-facing CLI is the `shardd-cli` crate (binary: `shardd`).
+//! protocol directly; needs the cluster PSK to dial. Not for developers — the
+//! developer-facing CLI is the `shardd-cli` crate (binary: `shardd`).
 
 use std::path::PathBuf;
 use std::time::Duration;

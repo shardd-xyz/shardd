@@ -91,13 +91,13 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: apps/customer-cli
+        working-directory: apps/developer-cli
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/customer-cli
+          workspaces: apps/developer-cli
       - name: cargo fmt --check
         run: cargo fmt --check
       - name: cargo clippy

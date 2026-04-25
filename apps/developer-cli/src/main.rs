@@ -1,4 +1,4 @@
-//! `shardd` — customer-facing CLI for shardd.
+//! `shardd` — developer-facing CLI for shardd.
 //!
 //! Authenticates via a browser-based device flow against the dashboard at
 //! app.shardd.xyz, stores the issued API key at
@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "shardd",
-    about = "Customer-facing CLI for shardd",
+    about = "Developer-facing CLI for shardd",
     version,
     subcommand_required = true,
     arg_required_else_help = true

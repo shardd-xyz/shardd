@@ -334,7 +334,7 @@ cmd_sdk_test_kotlin() {
 
 cmd_sdk_test_cli() {
     (
-        cd apps/customer-cli &&
+        cd apps/developer-cli &&
         cargo fmt --check &&
         cargo clippy --all-targets -- -D warnings &&
         cargo test "$@" &&
@@ -498,18 +498,18 @@ cmd_sdk_publish_ts() {
 cmd_sdk_publish_cli() {
     local version="$1"
     _sdk_require_version cli "$version"
-    # Bump version = "x.y.z" (first occurrence) in apps/customer-cli/Cargo.toml.
-    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" apps/customer-cli/Cargo.toml
+    # Bump version = "x.y.z" (first occurrence) in apps/developer-cli/Cargo.toml.
+    sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" apps/developer-cli/Cargo.toml
     (
-        cd apps/customer-cli &&
+        cd apps/developer-cli &&
         cargo build &&
         cargo test
     )
-    (cd apps/customer-cli && cargo publish --dry-run --allow-dirty)
+    (cd apps/developer-cli && cargo publish --dry-run --allow-dirty)
     echo
-    echo "about to publish apps/customer-cli (shardd-cli) v$version to crates.io"
+    echo "about to publish apps/developer-cli (shardd-cli) v$version to crates.io"
     echo "this is permanent and cannot be overwritten"
-    (cd apps/customer-cli && cargo publish --allow-dirty)
+    (cd apps/developer-cli && cargo publish --allow-dirty)
     echo
     echo "published shardd-cli v$version to crates.io — try cargo install shardd-cli"
 }
@@ -626,12 +626,12 @@ SDKs:
   sdk:test:ts                Install + build + test sdks/typescript
   sdk:test:python            Install + test sdks/python (creates .venv)
   sdk:test:kotlin            Build + test sdks/kotlin and publish to Maven local
-  sdk:test:cli               fmt + clippy + test + publish-dry-run on apps/customer-cli
+  sdk:test:cli               fmt + clippy + test + publish-dry-run on apps/developer-cli
   sdk:publish:rust <version> Bump sdks/rust version, test, publish locally to crates.io
   sdk:publish:ts <version>   Bump sdks/typescript version, test, publish locally to npm
   sdk:publish:python <ver>   Bump sdks/python version, test, publish locally to PyPI
   sdk:publish:kotlin <ver>   Bump sdks/kotlin version, test, publish locally to Maven Central
-  sdk:publish:cli <version>  Bump apps/customer-cli version, test, publish locally to crates.io
+  sdk:publish:cli <version>  Bump apps/developer-cli version, test, publish locally to crates.io
   sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
 
 Other:
