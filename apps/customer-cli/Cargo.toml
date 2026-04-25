@@ -19,7 +19,6 @@ name = "shardd"
 path = "src/main.rs"
 
 [dependencies]
-shardd = "0.1"
 clap = { workspace = true }
 tokio = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -32,3 +31,4 @@ dirs = "5"
 toml = "0.8"
 webbrowser = "1"
 rpassword = "7"
+gethostname = "0.5"
