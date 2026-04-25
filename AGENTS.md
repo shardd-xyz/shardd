@@ -110,6 +110,24 @@ If you see that error in the field, prod is the source of truth: run
 `sha384sum libs/.../00N_*.sql`, patch the checksum row in each affected
 DB, and the crashlooping containers will boot on the next restart cycle.
 
+The rule is enforced by two gates:
+
+1. **Pre-commit hook** at `scripts/git-hooks/pre-commit` refuses any
+   commit that modifies, renames, or deletes a tracked migration file.
+   Adds (new migrations) are allowed. Enable once per workstation:
+   ```bash
+   ./run hooks:install
+   ```
+   Bypass deliberately with `GIT_ALLOW_MIGRATION_EDIT=1 git commit ...`
+   when the edit is genuinely cosmetic and you commit to patching
+   `_sqlx_migrations.checksum` in every existing DB beforehand.
+
+2. **Deploy gate** in `./run deploy` refuses to ship if any file under
+   `*/migrations/*.sql` is dirty (modified, staged, or untracked).
+   Every migration that lands in a prod image must already be in git
+   history so deploys are reproducible from a SHA. The gate fires for
+   both `./run deploy` and `./run deploy:fast`.
+
 ## FULL LOOP (commit → push → deploy → validate)
 
 When the user says "do the FULL LOOP" (or "full loop"), execute these

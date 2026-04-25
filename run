@@ -171,6 +171,39 @@ cmd_servers() {
     ./infra/infractl.py servers "$@"
 }
 
+cmd_hooks_install() {
+    git config core.hooksPath scripts/git-hooks
+    chmod +x scripts/git-hooks/* 2>/dev/null || true
+    echo "core.hooksPath = scripts/git-hooks"
+    git -c core.hooksPath=scripts/git-hooks config --get core.hooksPath >/dev/null
+    ls -l scripts/git-hooks/
+}
+
+# Refuse to deploy if any migration file has uncommitted changes
+# (modified, staged, or untracked). Every migration that ships in a
+# prod image must already be in git history so deploys are reproducible
+# from a SHA, and so the pre-commit hook has actually had a chance to
+# vet the change. See AGENTS.md → Migrations.
+_deploy_check_migrations() {
+    local dirty
+    dirty=$(
+        {
+            git diff --name-only
+            git diff --cached --name-only
+            git ls-files --others --exclude-standard
+        } | grep -E '/migrations/[^/]+\.sql$' | sort -u || true
+    )
+    if [ -n "$dirty" ]; then
+        echo
+        echo "✗ refusing to deploy — uncommitted migration changes:"
+        echo "$dirty" | sed 's/^/    /'
+        echo
+        echo "  every migration that ships to prod must already be committed."
+        echo "  commit (the pre-commit hook will vet) or stash, then retry."
+        exit 1
+    fi
+}
+
 cmd_deploy() {
     # Forward subcommands (plan/status/validate-scopes/etc.) and any explicit
     # flags straight through to infractl so existing operator muscle memory
@@ -199,6 +232,8 @@ cmd_deploy() {
 cmd_deploy_full() {
     local deployment="${1:?deployment name required}"
     shift || true
+
+    _deploy_check_migrations
 
     if [ "${DEPLOY_SKIP_CHECKS:-0}" != "1" ]; then
         echo "▶ fmt"
@@ -569,6 +604,7 @@ SDKs:
   sdk:test:failover          Run SDK failover tests against 3-gateway docker harness
 
 Other:
+  hooks:install      Point git at scripts/git-hooks/ (pre-commit migration guard)
   clean              Remove demo data directories
   help               Show this help
 EOF
@@ -612,6 +648,7 @@ case "${1:-help}" in
     sdk:publish:python) shift || true; cmd_sdk_publish_python "$@" ;;
     sdk:publish:kotlin) shift || true; cmd_sdk_publish_kotlin "$@" ;;
     sdk:test:failover)  shift || true; cmd_sdk_test_failover "$@" ;;
+    hooks:install)  cmd_hooks_install ;;
     clean)          cmd_clean ;;
     help|--help|-h) cmd_help ;;
     *)              echo "Unknown command: $1"; echo; cmd_help; exit 1 ;;

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Refuse commits that modify, rename, or delete an already-tracked
+# migration file. Migrations are append-only once applied — the right
+# fix for any change to the produced schema is a NEW forward-only
+# migration, not an in-place edit. See AGENTS.md → Migrations for the
+# full rationale and the recovery recipe.
+#
+# Bypass deliberately when the edit is genuinely cosmetic and you
+# already plan to patch _sqlx_migrations.checksum in every existing DB
+# before the next deploy:
+#
+#   GIT_ALLOW_MIGRATION_EDIT=1 git commit ...
+set -euo pipefail
+
+if [ "${GIT_ALLOW_MIGRATION_EDIT:-0}" = "1" ]; then
+    echo "pre-commit: GIT_ALLOW_MIGRATION_EDIT=1 — skipping migration check" >&2
+    exit 0
+fi
+
+violations=$(
+    git diff --cached --name-status --diff-filter=MRD \
+        | awk '$NF ~ /\/migrations\/[^/]+\.sql$/ { print }'
+)
+
+if [ -n "$violations" ]; then
+    cat >&2 <<'EOF'
+
+  refusing to commit in-place migration edits.
+
+  migrations under */migrations/*.sql are append-only once they have
+  been applied to a real DB. sqlx records a SHA-384 of every applied
+  file; editing the file in place crashloops every existing DB on its
+  next restart with "migration N was previously applied but has been
+  modified".
+
+  the right fix is a NEW forward-only migration file. add a new
+  numbered .sql under the same directory instead of editing an
+  existing one.
+
+  offending changes:
+EOF
+    echo "$violations" | sed 's/^/      /' >&2
+    cat >&2 <<'EOF'
+
+  if you really know this edit is cosmetic and you commit to patching
+  _sqlx_migrations.checksum in every existing DB before the next
+  deploy, bypass with:
+      GIT_ALLOW_MIGRATION_EDIT=1 git commit ...
+
+EOF
+    exit 1
+fi
