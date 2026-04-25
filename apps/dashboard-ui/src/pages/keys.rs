@@ -265,29 +265,39 @@ fn KeyCard(api_key: ApiKey, on_change: EventHandler<()>) -> Element {
                                                 }
                                             });
                                         };
-                                        rsx! {
-                                            div { class: "flex items-center gap-2.5 p-2.5 rounded-lg border border-base-800 bg-base-1000",
-                                                Badge { text: scope.match_type.clone(), tone: BadgeTone::Primary }
-                                                {
-                                                    let bucket_label = if scope.match_type == "all" { "all buckets".to_string() } else { scope.resource_value.clone().unwrap_or("all buckets".to_string()) };
-                                                    rsx! {
+                                        {
+                                            let is_control = scope.resource_type == "control";
+                                            let perms = format!(
+                                                "{} · {}",
+                                                if scope.can_read { "read" } else { "no-read" },
+                                                if scope.can_write { "write" } else { "no-write" },
+                                            );
+                                            let bucket_label = if scope.match_type == "all" {
+                                                "all buckets".to_string()
+                                            } else {
+                                                scope
+                                                    .resource_value
+                                                    .clone()
+                                                    .unwrap_or_else(|| "all buckets".to_string())
+                                            };
+                                            rsx! {
+                                                div { class: "flex items-center gap-2.5 p-2.5 rounded-lg border border-base-800 bg-base-1000",
+                                                    if is_control {
+                                                        Badge { text: "dashboard control".to_string(), tone: BadgeTone::Warning }
+                                                        span { class: "text-base-500 font-mono text-[11px]",
+                                                            "manage keys, buckets, profile, billing"
+                                                        }
+                                                    } else {
+                                                        Badge { text: scope.match_type.clone(), tone: BadgeTone::Primary }
                                                         span { class: "px-1.5 py-0.5 rounded border border-base-800 bg-base-900 text-base-300 font-mono text-[11px]",
                                                             "{bucket_label}"
                                                         }
                                                     }
-                                                }
-                                                {
-                                                    let perms = format!("{} · {}",
-                                                        if scope.can_read { "read" } else { "no-read" },
-                                                        if scope.can_write { "write" } else { "no-write" },
-                                                    );
-                                                    rsx! {
-                                                        span { class: "text-base-500 font-mono text-[11px]", "{perms}" }
-                                                    }
-                                                }
-                                                if is_active {
-                                                    div { class: "ml-auto",
-                                                        Btn { variant: BtnVariant::Danger, size: BtnSize::Sm, onclick: on_remove, "Remove" }
+                                                    span { class: "text-base-500 font-mono text-[11px]", "{perms}" }
+                                                    if is_active {
+                                                        div { class: "ml-auto",
+                                                            Btn { variant: BtnVariant::Danger, size: BtnSize::Sm, onclick: on_remove, "Remove" }
+                                                        }
                                                     }
                                                 }
                                             }

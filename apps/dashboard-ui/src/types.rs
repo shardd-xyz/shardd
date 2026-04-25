@@ -64,10 +64,19 @@ pub struct ApiKey {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ApiKeyScope {
     pub id: String,
+    /// "bucket" (data plane) or "control" (dashboard control plane).
+    /// Defaults to "bucket" so older API responses missing the field
+    /// continue to render correctly.
+    #[serde(default = "default_scope_resource_type")]
+    pub resource_type: String,
     pub match_type: String,
     pub resource_value: Option<String>,
     pub can_read: bool,
     pub can_write: bool,
+}
+
+fn default_scope_resource_type() -> String {
+    "bucket".to_string()
 }
 
 #[allow(dead_code)]

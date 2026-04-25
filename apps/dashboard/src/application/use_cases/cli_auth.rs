@@ -235,7 +235,13 @@ impl CliAuthUseCases {
             },
         ];
 
-        let key_name = format!("cli/{}", session.hostname);
+        // Include the first 6 chars of the session_id so back-to-back
+        // `shardd auth login`s from the same host produce distinct,
+        // identifiable rows in the dashboard's keys list. Without
+        // this every CLI key on the same machine collides on
+        // `cli/<hostname>` and the rows look like duplicates.
+        let session_suffix = session_id.chars().take(6).collect::<String>();
+        let key_name = format!("cli/{}/{}", session.hostname, session_suffix);
         let issued: IssuedApiKey = self
             .developer_auth
             .issue_api_key_with_scopes(user_id, &key_name, None, &scopes)
