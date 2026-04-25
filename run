@@ -179,6 +179,74 @@ cmd_hooks_install() {
     ls -l scripts/git-hooks/
 }
 
+# Compare every */migrations/*.sql on disk to the checksum recorded
+# in _sqlx_migrations on the prod DBs. Catches the failure mode that
+# caused two outages today: a migration file edited in place AFTER
+# being applied to a real DB. Read-only — prints a ready-to-paste
+# UPDATE for each drift row but applies nothing.
+cmd_migrations_check() {
+    local prod_infra="infra/secrets/prod-infra"
+    if [ ! -f "$prod_infra" ]; then
+        echo "missing $prod_infra — run from a checkout with prod secrets"
+        return 1
+    fi
+
+    # source_dir | host | container | db | pg_user | label
+    local pairs=(
+        "libs/storage/migrations|3.93.44.70|shardd-prod-use1-full-db|shardd|shardd|use1-full"
+        "libs/storage/migrations|18.159.52.211|shardd-prod-euc1-full-db|shardd|shardd|euc1-full"
+        "libs/storage/migrations|18.166.211.248|shardd-prod-ape1-full-db|shardd|shardd|ape1-full"
+        "apps/dashboard/migrations|52.90.198.47|shardd-prod-use1-dashboard-postgres|user_gateway|saassy|dashboard"
+        "apps/billing/migrations|52.90.198.47|shardd-prod-use1-dashboard-postgres|billing_db|saassy|billing"
+    )
+
+    local issues=0
+    for pair in "${pairs[@]}"; do
+        IFS='|' read -r src_dir host container db pg_user label <<< "$pair"
+        echo
+        echo "=== $label ($db @ $host) ==="
+        local db_rows
+        db_rows=$(
+            ssh -i "$prod_infra" -o BatchMode=yes -o StrictHostKeyChecking=no \
+                "ubuntu@$host" \
+                "docker exec -i $container psql -U $pg_user -d $db -tAc \"SELECT version || '|' || encode(checksum,'hex') FROM _sqlx_migrations ORDER BY version\"" 2>&1
+        ) || {
+            echo "  could not connect — $db_rows"
+            issues=$((issues+1))
+            continue
+        }
+
+        for f in "$src_dir"/*.sql; do
+            local ver
+            ver=$(basename "$f" | grep -oE '^[0-9]+' | sed 's/^0*//')
+            local src_sum
+            src_sum=$(sha384sum "$f" | awk '{print $1}')
+            local db_sum
+            db_sum=$(echo "$db_rows" | awk -F'|' -v v="$ver" '$1 == v { print $2 }')
+            if [ -z "$db_sum" ]; then
+                printf '  v%-3s  %s  ↩ not yet applied\n' "$ver" "$f"
+            elif [ "$src_sum" = "$db_sum" ]; then
+                printf '  v%-3s  %s  ✓\n' "$ver" "$f"
+            else
+                issues=$((issues+1))
+                printf '  v%-3s  %s  ✗ DRIFT\n' "$ver" "$f"
+                printf '         source: %s\n' "$src_sum"
+                printf '         dbcheck: %s\n' "$db_sum"
+                printf '         fix:    docker exec -i %s psql -U %s -d %s -c "UPDATE _sqlx_migrations SET checksum = decode('"'"'%s'"'"','"'"'hex'"'"') WHERE version = %s;"\n' \
+                    "$container" "$pg_user" "$db" "$src_sum" "$ver"
+            fi
+        done
+    done
+
+    echo
+    if [ $issues -eq 0 ]; then
+        echo "✓ all migration checksums match"
+    else
+        echo "✗ $issues drift(s) detected — see fix lines above"
+        return 1
+    fi
+}
+
 # Refuse to deploy if any migration file has uncommitted changes
 # (modified, staged, or untracked). Every migration that ships in a
 # prod image must already be in git history so deploys are reproducible
@@ -636,6 +704,7 @@ SDKs:
 
 Other:
   hooks:install      Point git at scripts/git-hooks/ (pre-commit migration guard)
+  migrations:check   Diff prod _sqlx_migrations checksums vs local source SHA-384
   clean              Remove demo data directories
   help               Show this help
 EOF
@@ -682,6 +751,7 @@ case "${1:-help}" in
     sdk:publish:cli)    shift || true; cmd_sdk_publish_cli "$@" ;;
     sdk:test:failover)  shift || true; cmd_sdk_test_failover "$@" ;;
     hooks:install)  cmd_hooks_install ;;
+    migrations:check) cmd_migrations_check ;;
     clean)          cmd_clean ;;
     help|--help|-h) cmd_help ;;
     *)              echo "Unknown command: $1"; echo; cmd_help; exit 1 ;;

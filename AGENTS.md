@@ -128,6 +128,15 @@ The rule is enforced by two gates:
    history so deploys are reproducible from a SHA. The gate fires for
    both `./run deploy` and `./run deploy:fast`.
 
+3. **Drift diagnostic** — `./run migrations:check` SSHes into every
+   prod DB host (3 full-node DBs, dashboard, billing), dumps
+   `_sqlx_migrations.checksum`, and compares against `sha384sum` of
+   the local source files. Read-only — prints a ready-to-paste
+   `UPDATE _sqlx_migrations SET checksum = decode('…','hex') WHERE
+   version = N;` for each drifted row. Run before every deploy when
+   touching migrations, and every time a service crashloops with
+   "previously applied but has been modified".
+
 ## FULL LOOP (commit → push → deploy → validate)
 
 When the user says "do the FULL LOOP" (or "full loop"), execute these
