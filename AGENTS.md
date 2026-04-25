@@ -92,3 +92,77 @@ flags gate `fully_setup` — a missing flag blocks `deploy apply` until re-setup
 collapsed by default. Each node shows the address libp2p most likely dials over
 (`private` / `tailscale` / `public` / `dns`); expand to see every advertised
 multiaddr. The gateway's `best_node()` is marked per edge.
+
+## Migrations
+
+Files under `libs/storage/migrations/`, `apps/dashboard/migrations/`,
+and `apps/billing/migrations/` are loaded by `sqlx::migrate!()` at
+service startup. Once a migration has run on a real DB, **never edit
+the file in place** — sqlx records a SHA-384 of every applied migration
+in `_sqlx_migrations.checksum` and refuses to start with `migration N
+was previously applied but has been modified` if the on-disk content
+changes. Any post-apply edit needs either:
+
+1. A new forward-only migration file (preferred), or
+2. A pre-deploy `UPDATE _sqlx_migrations SET checksum = decode('<new sha384>','hex') WHERE version = N;` against every existing DB — only safe if the edit is genuinely cosmetic (comments / whitespace) and the schema is unchanged.
+
+If you see that error in the field, prod is the source of truth: run
+`sha384sum libs/.../00N_*.sql`, patch the checksum row in each affected
+DB, and the crashlooping containers will boot on the next restart cycle.
+
+## FULL LOOP (commit → push → deploy → validate)
+
+When the user says "do the FULL LOOP" (or "full loop"), execute these
+phases in order. **Don't skip or reorder them**, and stop on any red.
+
+### 1. Mini-loop — local validation gate
+Block on any failure; never push or deploy with red.
+```bash
+./run fmt
+./run lint
+./run test
+./run sdk:test:failover    # 3-gateway docker harness, all 4 SDKs × 2 phases
+```
+Add `cargo check -p shardd-dashboard-ui` if the change touched Dioxus.
+
+### 2. Push
+`landing/` is a git submodule pointing at `shardd-xyz/shardd-landing`.
+When it has unpushed commits, push the submodule first so the SHA is
+resolvable on the remote, then bump the pointer in the parent repo:
+```bash
+git -C landing push origin main
+git add landing && git commit -m "Bump landing submodule for ..."
+git push origin main
+```
+If only the main repo is dirty, just `git push`.
+
+### 3. Deploy
+```bash
+./run deploy
+```
+Re-runs fmt/lint/test, bundles the Dioxus UI, builds + pushes images
+to the tailnet registry, applies via infractl. Use `./run deploy:fast`
+only if the mini-loop already passed and you trust the gate.
+
+### 4. Prod validation
+- **Edge health** — each region's gateway should be ready with ≥2 healthy nodes:
+  ```bash
+  for r in use1 euc1 ape1; do
+    curl -sS "https://$r.api.shardd.xyz/gateway/health" | jq '{edge_id,ready,healthy_nodes,sync_gap}'
+  done
+  ```
+- **HTTP 200** — `curl -sI https://shardd.xyz/` and `https://app.shardd.xyz/` return 200.
+- **Screenshots** — capture prod surfaces and read them back to spot regressions:
+  ```bash
+  cd e2e && node prod-loop-screenshots.mjs
+  ```
+  This shoots `landing-home`, `landing-quickstart`, `landing-sdks`,
+  `landing-public-edge-clients`, and `app-login` into
+  `/tmp/prod-screenshots/`. Read each PNG with the Read tool and
+  visually confirm the surface you changed actually rendered correctly.
+  Authenticated dashboard screenshots use `e2e/dx-screenshot.mjs` (needs
+  `RESEND_API_KEY` from `infra/secrets/prod.env`).
+
+### 5. Report
+End with: deployed commit SHAs (both repos), prod edge health summary,
+which screenshots you visually verified, and any open follow-ups.
