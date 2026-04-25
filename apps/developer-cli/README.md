@@ -28,6 +28,13 @@ The binary lands at `~/.cargo/bin/shardd`.
 > Browser device-flow auth lands an API key at
 > `~/.config/shardd/credentials.toml`; subsequent commands speak HTTPS
 > to the dashboard's `/api/developer/*` and `/api/auth/cli/*` endpoints.
+>
+> CLI keys are minted with both a data-plane (`bucket:all:rw`) and a
+> control-plane (`control:all:rw`) scope. Existing keys created via
+> the dashboard before this release have only bucket scopes — they
+> still write events but can't manage other keys, archive buckets,
+> or hit profile/billing. Re-issue via `shardd auth login` (or tick
+> "Allow dashboard control" in the dashboard's create-key wizard).
 
 ## License
 

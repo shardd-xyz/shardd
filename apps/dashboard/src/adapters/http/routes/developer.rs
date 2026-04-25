@@ -52,6 +52,14 @@ struct CreateScopeRequest {
     can_read: bool,
     #[serde(default)]
     can_write: bool,
+    /// Optional, defaults to `bucket` for backward compatibility with
+    /// the dashboard's existing scope-create payload.
+    #[serde(default = "default_scope_resource_type")]
+    resource_type: ScopeResourceType,
+}
+
+fn default_scope_resource_type() -> ScopeResourceType {
+    ScopeResourceType::Bucket
 }
 
 async fn me(
@@ -84,7 +92,7 @@ async fn create_key(
         .scopes
         .iter()
         .map(|s| NewScope {
-            resource_type: ScopeResourceType::Bucket,
+            resource_type: s.resource_type.clone(),
             match_type: s.match_type.clone(),
             resource_value: s.bucket.clone(),
             can_read: s.can_read,
@@ -143,7 +151,7 @@ async fn create_scope(
         .developer_auth_repo
         .create_scope(
             id,
-            ScopeResourceType::Bucket,
+            request.resource_type.clone(),
             request.match_type,
             request.bucket.as_deref(),
             request.can_read,
@@ -215,15 +223,31 @@ fn validate_scope_request(request: &CreateScopeRequest) -> AppResult<()> {
             "scope must grant read or write".into(),
         ));
     }
-    if request.match_type != ScopeMatchType::All
-        && request
-            .bucket
-            .as_deref()
-            .is_none_or(|bucket| bucket.trim().is_empty())
-    {
-        return Err(AppError::InvalidInput(
-            "bucket is required for exact or prefix scopes".into(),
-        ));
+    match request.resource_type {
+        ScopeResourceType::Bucket => {
+            if request.match_type != ScopeMatchType::All
+                && request
+                    .bucket
+                    .as_deref()
+                    .is_none_or(|bucket| bucket.trim().is_empty())
+            {
+                return Err(AppError::InvalidInput(
+                    "bucket is required for exact or prefix scopes".into(),
+                ));
+            }
+        }
+        ScopeResourceType::Control => {
+            if request.match_type != ScopeMatchType::All
+                || request
+                    .bucket
+                    .as_deref()
+                    .is_some_and(|b| !b.trim().is_empty())
+            {
+                return Err(AppError::InvalidInput(
+                    "control scopes must use match_type=all with no bucket".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }

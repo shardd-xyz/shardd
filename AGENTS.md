@@ -86,6 +86,30 @@ installs Docker + UFW, enrolls the host in tailnet (`TAILSCALE_AUTH_KEY` from
 UFW's `DOCKER-USER` chain to allow `100.64.0.0/10` (tailnet) as a source. Probe
 flags gate `fully_setup` — a missing flag blocks `deploy apply` until re-setup.
 
+### Developer API key scopes
+
+Two `resource_type` values today:
+
+- **`bucket`** — data plane. `(match_type, bucket)` controls which
+  events the gateway will accept on this key via `/api/machine/introspect`.
+  This is the legacy scope shape; every API key minted before the
+  developer-CLI work has only bucket scopes.
+- **`control`** — dashboard control plane. Required to call
+  `/api/developer/*` and read-only `/api/user/*` with an API key
+  (the `Authenticated` extractor enforces this). `match_type` must
+  be `all` and `bucket` must be empty. Off by default — only the
+  `shardd` CLI's device-flow mints it automatically; dashboard-issued
+  keys get an explicit "Allow dashboard control" checkbox at creation.
+
+A pre-CLI key is data-plane-only by construction: it can credit/debit
+buckets matching its scope, but it can't list other keys, archive
+buckets, export profile data, or hit billing endpoints. To upgrade an
+existing key, either issue a new one with the `control` scope ticked
+in the dashboard wizard, or POST a control scope to its
+`/api/developer/keys/{id}/scopes` endpoint (the CLI's
+`shardd keys scopes add <id> --resource-type control --match-type all
+--read --write` is the same call).
+
 ### Admin UI — mesh inspector
 
 `/admin/mesh` (admin-only) lists each edge gateway and the mesh nodes it sees,

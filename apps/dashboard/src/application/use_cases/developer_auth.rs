@@ -13,15 +13,39 @@ use crate::app_error::{AppError, AppResult};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeResourceType {
+    /// Data plane: read/write events in a bucket. Validated by the
+    /// gateway via `/api/machine/introspect` against the
+    /// (match_type, bucket) pair.
     Bucket,
+    /// Control plane: dashboard-equivalent reach for one user
+    /// (manage their own buckets, keys, profile, billing). Required
+    /// to call `/api/developer/*` and read-only `/api/user/*` with
+    /// an API key. `match_type=All`, `resource_value=NULL` are the
+    /// only valid combinations today; can_read/can_write distinguish
+    /// browse-only keys from full-control keys.
+    Control,
 }
 
 impl std::fmt::Display for ScopeResourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bucket => write!(f, "bucket"),
+            Self::Control => write!(f, "control"),
         }
     }
+}
+
+/// Predicate: does this key carry at least one active control-plane
+/// scope? Used by `Authenticated` to gate API-key access to
+/// `/api/developer/*` so that older keys (Bucket scopes only) keep
+/// their data-plane reach but lose control-plane access. Read-only
+/// for now — `can_read` alone is enough to GET; mutating endpoints
+/// also require `can_write`. The current Authenticated impl only
+/// gates on presence; per-route read/write split is a follow-up.
+pub fn key_has_control_scope(scopes: &[DeveloperApiKeyScope]) -> bool {
+    scopes
+        .iter()
+        .any(|s| s.resource_type == ScopeResourceType::Control && (s.can_read || s.can_write))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

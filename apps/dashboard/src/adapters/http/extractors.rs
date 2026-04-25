@@ -7,7 +7,10 @@ use crate::{
     adapters::http::app_state::AppState,
     app_error::AppError,
     application::jwt,
-    use_cases::{developer_auth::hash_api_key, user::UserProfile},
+    use_cases::{
+        developer_auth::{hash_api_key, key_has_control_scope},
+        user::UserProfile,
+    },
 };
 
 /// Extracts the current authenticated user from the access_token cookie.
@@ -118,6 +121,20 @@ async fn profile_from_bearer(
     }
     if found.user.is_frozen {
         return Err(AppError::AccountFrozen);
+    }
+
+    // Control-plane gate: an API key may only call /api/developer/*
+    // and read-only /api/user/* if it carries an explicit
+    // `resource_type=control` scope. Pre-CLI keys (bucket scopes only)
+    // keep their data-plane reach via /api/machine/introspect but get
+    // 403 here. CLI keys minted by /api/auth/cli/exchange include the
+    // control scope by design.
+    let scopes = state
+        .developer_auth_repo
+        .list_scopes(found.api_key.id)
+        .await?;
+    if !key_has_control_scope(&scopes) {
+        return Err(AppError::Forbidden);
     }
 
     // Load the full UserProfile so the extractor's return type matches

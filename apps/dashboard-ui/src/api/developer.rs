@@ -71,6 +71,10 @@ pub async fn list_key_scopes(key_id: &str) -> Result<Vec<ApiKeyScope>, ApiError>
 
 #[derive(Serialize, Clone)]
 pub struct CreateScopeRequest {
+    /// "bucket" (default) or "control". Backend defaults to "bucket"
+    /// when this field is missing, so older payloads still work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
     pub match_type: String,
     #[serde(rename = "bucket")]
     pub resource_value: Option<String>,

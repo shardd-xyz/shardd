@@ -449,6 +449,7 @@ impl DeveloperAuthRepo for PostgresPersistence {
 fn parse_resource_type(value: &str) -> AppResult<ScopeResourceType> {
     match value {
         "bucket" => Ok(ScopeResourceType::Bucket),
+        "control" => Ok(ScopeResourceType::Control),
         other => Err(AppError::Internal(format!(
             "unknown scope resource type in storage: {other}"
         ))),

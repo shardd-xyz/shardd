@@ -212,16 +212,28 @@ impl CliAuthUseCases {
             .user_id
             .ok_or_else(|| AppError::Internal("authorized session missing user_id".into()))?;
 
-        // Permissive default: full read+write on all buckets, mirroring
-        // the dashboard session's reach. v2 will surface a scope picker
-        // on the cli-authorize page and pass the chosen scopes through.
-        let scopes = vec![NewScope {
-            resource_type: ScopeResourceType::Bucket,
-            match_type: ScopeMatchType::All,
-            resource_value: None,
-            can_read: true,
-            can_write: true,
-        }];
+        // CLI keys mint with both data-plane (Bucket / All / rw) and
+        // control-plane (Control / All / rw) scopes — the CLI needs
+        // the latter to reach `/api/developer/*` for buckets, keys,
+        // profile, billing. v2 will surface a scope picker on the
+        // cli-authorize page so an operator can mint a read-only or
+        // data-plane-only CLI key.
+        let scopes = vec![
+            NewScope {
+                resource_type: ScopeResourceType::Bucket,
+                match_type: ScopeMatchType::All,
+                resource_value: None,
+                can_read: true,
+                can_write: true,
+            },
+            NewScope {
+                resource_type: ScopeResourceType::Control,
+                match_type: ScopeMatchType::All,
+                resource_value: None,
+                can_read: true,
+                can_write: true,
+            },
+        ];
 
         let key_name = format!("cli/{}", session.hostname);
         let issued: IssuedApiKey = self

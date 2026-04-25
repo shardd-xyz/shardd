@@ -20,8 +20,10 @@ pub enum KeysCmd {
         #[arg(long)]
         expires_at: Option<String>,
         /// Grant scope(s). Use the format
-        ///   all:rw  | exact:<bucket>:rw | prefix:<bucket>:r
-        /// Repeatable. Default: a single "all:rw" scope when omitted.
+        ///   bucket:all:rw | bucket:exact:<name>:rw | bucket:prefix:<p>:r | control:rw
+        /// (Legacy `all:rw`, `exact:<name>:rw`, `prefix:<p>:r` parse as
+        /// bucket scopes.) Repeatable. Default when omitted: a single
+        /// `bucket:all:rw` scope (no control-plane access).
         #[arg(long = "scope")]
         scopes: Vec<String>,
     },
@@ -44,7 +46,10 @@ pub enum ScopesCmd {
     },
     Add {
         key_id: String,
-        /// `all`, `exact`, or `prefix`.
+        /// `bucket` (default) or `control`.
+        #[arg(long, default_value = "bucket")]
+        resource_type: String,
+        /// `all`, `exact`, or `prefix` (control scopes must use `all`).
         #[arg(long)]
         match_type: String,
         #[arg(long)]
@@ -115,12 +120,14 @@ pub async fn run(cmd: KeysCmd, dashboard_url_override: Option<&str>) -> Result<(
             }
             ScopesCmd::Add {
                 key_id,
+                resource_type,
                 match_type,
                 bucket,
                 read,
                 write,
             } => {
                 let body = json!({
+                    "resource_type": resource_type,
                     "match_type": match_type,
                     "bucket": bucket,
                     "can_read": read,
@@ -143,16 +150,21 @@ pub async fn run(cmd: KeysCmd, dashboard_url_override: Option<&str>) -> Result<(
     }
 }
 
-/// Parse a `--scope` flag value into the JSON shape the dashboard expects.
-/// Accepts:
-///   "all:rw" | "all:r" | "all:w"
-///   "exact:<bucket>:rw"
-///   "prefix:<bucket>:rw"
+/// Parse a `--scope` flag value into the JSON shape the dashboard
+/// expects. Accepts:
+///   "bucket:all:rw"        | "bucket:all:r"          | "bucket:all:w"
+///   "bucket:exact:<name>:rw"
+///   "bucket:prefix:<prefix>:rw"
+///   "control:rw"           | "control:r"             | "control:w"
+/// Legacy (without leading `bucket:`) still parses as bucket:
+///   "all:rw" | "exact:<name>:rw" | "prefix:<prefix>:rw"
 fn build_scopes(raw: &[String]) -> Result<Vec<Value>> {
     if raw.is_empty() {
-        // Default for `keys create` with no --scope: all + read+write,
-        // mirroring the dashboard's quick-create path.
+        // Default for `keys create` with no --scope: bucket:all:rw,
+        // matching the dashboard's quick-create path. Control plane
+        // is opt-in.
         return Ok(vec![json!({
+            "resource_type": "bucket",
             "match_type": "all",
             "bucket": null,
             "can_read": true,
@@ -164,13 +176,21 @@ fn build_scopes(raw: &[String]) -> Result<Vec<Value>> {
 
 fn parse_one_scope(s: &String) -> Result<Value> {
     let parts: Vec<&str> = s.split(':').collect();
-    let (match_type, bucket, perms) = match parts.as_slice() {
-        ["all", perms] => ("all", None, *perms),
-        ["exact", bucket, perms] => ("exact", Some(bucket.to_string()), *perms),
-        ["prefix", bucket, perms] => ("prefix", Some(bucket.to_string()), *perms),
+    let (resource_type, match_type, bucket, perms) = match parts.as_slice() {
+        ["control", perms] => ("control", "all", None, *perms),
+        ["bucket", "all", perms] => ("bucket", "all", None, *perms),
+        ["bucket", "exact", bucket, perms] => ("bucket", "exact", Some(bucket.to_string()), *perms),
+        ["bucket", "prefix", bucket, perms] => {
+            ("bucket", "prefix", Some(bucket.to_string()), *perms)
+        }
+        // Legacy bucket-implied forms — keep working until users
+        // migrate their scripts.
+        ["all", perms] => ("bucket", "all", None, *perms),
+        ["exact", bucket, perms] => ("bucket", "exact", Some(bucket.to_string()), *perms),
+        ["prefix", bucket, perms] => ("bucket", "prefix", Some(bucket.to_string()), *perms),
         _ => {
             return Err(anyhow::anyhow!(
-                "could not parse --scope {s} (expected all:<perms>, exact:<bucket>:<perms>, or prefix:<bucket>:<perms>)"
+                "could not parse --scope {s} (expected control:<perms>, bucket:all:<perms>, bucket:exact:<name>:<perms>, or bucket:prefix:<prefix>:<perms>)"
             ));
         }
     };
@@ -180,6 +200,7 @@ fn parse_one_scope(s: &String) -> Result<Value> {
         return Err(anyhow::anyhow!("--scope {s} grants neither r nor w"));
     }
     Ok(json!({
+        "resource_type": resource_type,
         "match_type": match_type,
         "bucket": bucket,
         "can_read": can_read,

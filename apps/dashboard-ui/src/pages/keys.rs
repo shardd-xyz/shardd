@@ -171,6 +171,7 @@ fn KeyCard(api_key: ApiKey, on_change: EventHandler<()>) -> Element {
             let cw = *scope_write.read();
             spawn(async move {
                 let req = CreateScopeRequest {
+                    resource_type: Some("bucket".to_string()),
                     match_type: mt,
                     resource_value: if scope_bucket.read().is_empty() {
                         None
@@ -461,6 +462,11 @@ fn CreateKeyWizard(active_count: usize, on_created: EventHandler<()>) -> Element
     // Seed the wizard with one permissive scope so the first key is usable
     // without knob-fiddling. The user can still edit or add more in step 2.
     let mut scopes: Signal<Vec<DraftScope>> = use_signal(|| vec![DraftScope::default()]);
+    // Off by default — most keys are programmatic data-plane credentials
+    // and shouldn't be able to manage other keys, archive buckets,
+    // export data, etc. Devs who want a CLI/admin-style key tick this
+    // explicitly.
+    let mut allow_control_plane = use_signal(|| false);
     let mut submitting = use_signal(|| false);
     let mut notice = use_notice();
     let mut flash = use_flash_key();
@@ -494,23 +500,34 @@ fn CreateKeyWizard(active_count: usize, on_created: EventHandler<()>) -> Element
             step.set(WizardStep::Scopes);
             return;
         }
+        let mut out_scopes: Vec<CreateScopeRequest> = scopes
+            .read()
+            .iter()
+            .map(|s| CreateScopeRequest {
+                resource_type: Some("bucket".to_string()),
+                match_type: s.match_type.clone(),
+                resource_value: if s.match_type == "all" || s.bucket.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.bucket.trim().to_string())
+                },
+                can_read: s.can_read,
+                can_write: s.can_write,
+            })
+            .collect();
+        if *allow_control_plane.read() {
+            out_scopes.push(CreateScopeRequest {
+                resource_type: Some("control".to_string()),
+                match_type: "all".to_string(),
+                resource_value: None,
+                can_read: true,
+                can_write: true,
+            });
+        }
         let req = CreateKeyRequest {
             name: n.clone(),
             expires_at: expiry.read().to_expires_at(),
-            scopes: scopes
-                .read()
-                .iter()
-                .map(|s| CreateScopeRequest {
-                    match_type: s.match_type.clone(),
-                    resource_value: if s.match_type == "all" || s.bucket.trim().is_empty() {
-                        None
-                    } else {
-                        Some(s.bucket.trim().to_string())
-                    },
-                    can_read: s.can_read,
-                    can_write: s.can_write,
-                })
-                .collect(),
+            scopes: out_scopes,
         };
         submitting.set(true);
         spawn(async move {
@@ -526,6 +543,7 @@ fn CreateKeyWizard(active_count: usize, on_created: EventHandler<()>) -> Element
                     flash.set(Some(fk));
                     name.set(String::new());
                     scopes.set(vec![DraftScope::default()]);
+                    allow_control_plane.set(false);
                     expiry.set(ExpiryPreset::Never);
                     step.set(WizardStep::Name);
                     on_created.call(());
@@ -639,6 +657,35 @@ fn CreateKeyWizard(active_count: usize, on_created: EventHandler<()>) -> Element
                                 "+ Add scope"
                             }
                         }
+                        {
+                            let allow = *allow_control_plane.read();
+                            rsx! {
+                                label {
+                                    class: "rounded-lg border border-dashed border-base-700 bg-base-1000 p-4 grid gap-1 cursor-pointer",
+                                    div { class: "flex items-center gap-2",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: allow,
+                                            onchange: move |evt| {
+                                                allow_control_plane.set(evt.checked());
+                                            },
+                                        }
+                                        span { class: "font-mono text-[13px] text-fg",
+                                            "Allow dashboard control"
+                                        }
+                                        Badge {
+                                            text: (if allow { "Granted" } else { "Off" }).to_string(),
+                                            tone: if allow { BadgeTone::Warning } else { BadgeTone::Neutral },
+                                        }
+                                    }
+                                    p { class: "font-mono text-[12px] text-base-500 leading-[160%] m-0",
+                                        "Off by default. Enable only for keys that need to manage other keys, archive/purge buckets, or update the account profile (this is what the "
+                                        code { class: "text-accent-100", "shardd" }
+                                        " CLI uses). Data-plane writes don't need this."
+                                    }
+                                }
+                            }
+                        }
                         div { class: "flex justify-between pt-2",
                             Btn {
                                 variant: BtnVariant::Ghost,
@@ -689,6 +736,14 @@ fn CreateKeyWizard(active_count: usize, on_created: EventHandler<()>) -> Element
                                                 ReviewScopeRow { draft: scope.clone() }
                                             }
                                         }
+                                    }
+                                }
+                                div { class: "grid gap-1",
+                                    span { class: "font-mono text-[12px] uppercase tracking-[-0.015rem] text-base-500",
+                                        "Dashboard control"
+                                    }
+                                    span { class: "font-mono text-[14px] text-fg",
+                                        if *allow_control_plane.read() { "granted (manage keys, buckets, profile, billing)" } else { "off (data plane only)" }
                                     }
                                 }
                                 div { class: "flex justify-between pt-2",
