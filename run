@@ -73,7 +73,7 @@ cmd_gateway() {
 # ── CLI client ──
 
 cmd_cli() {
-    cargo run -p shardd-cli -- "$@"
+    cargo run -p shardd-opctl -- "$@"
 }
 
 # ── Benchmark ──

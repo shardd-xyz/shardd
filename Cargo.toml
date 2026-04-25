@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/node",
     "apps/cli",
+    "apps/customer-cli",
     "apps/bench",
     "apps/dashboard",
     "apps/dashboard-ui",

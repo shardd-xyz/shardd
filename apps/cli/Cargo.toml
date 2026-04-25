@@ -1,7 +1,9 @@
 [package]
-name = "shardd-cli"
+name = "shardd-opctl"
 version = "0.1.0"
 edition.workspace = true
+description = "Operator-only CLI for the shardd private libp2p mesh. Not for customers — see the published `shardd-cli` crate for the customer-facing tool."
+publish = false
 
 [dependencies]
 shardd-types = { workspace = true }

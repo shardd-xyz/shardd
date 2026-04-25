@@ -1,4 +1,6 @@
-//! shardd CLI v2 — libp2p mesh client for shardd endpoints.
+//! shardd-opctl — operator-only libp2p mesh client. Talks the private mesh
+//! protocol directly; needs the cluster PSK to dial. Not for customers — the
+//! customer-facing CLI is the `shardd-cli` crate (binary: `shardd`).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,7 +14,10 @@ use shardd_broadcast::mesh_client::{MeshClient, MeshClientConfig};
 use shardd_types::{NodeRpcError, NodeRpcRequest, NodeRpcResponse};
 
 #[derive(Parser)]
-#[command(name = "shardd-cli", about = "CLI for shardd mesh v2")]
+#[command(
+    name = "shardd-opctl",
+    about = "Operator CLI for the shardd private libp2p mesh"
+)]
 struct Cli {
     #[arg(long = "bootstrap-peer")]
     bootstrap_peer: Vec<String>,
