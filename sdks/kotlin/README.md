@@ -117,16 +117,20 @@ from the operator machine:
 ./run sdk:publish:kotlin 0.1.1
 ```
 
-The publish step requires four env vars (Gradle auto-translates
-`ORG_GRADLE_PROJECT_*` into Gradle properties):
+That auto-sources `infra/secrets/sdk-publish.env` for the Central
+Portal user token and the ASCII-armored GPG private key, and prompts
+interactively for the GPG passphrase (which is intentionally not
+stored on disk).
 
-- `ORG_GRADLE_PROJECT_mavenCentralUsername` — Central Portal user token name
-- `ORG_GRADLE_PROJECT_mavenCentralPassword` — Central Portal user token
-- `ORG_GRADLE_PROJECT_signingInMemoryKey` — ASCII-armored GPG private key
-- `ORG_GRADLE_PROJECT_signingInMemoryKeyPassword` — GPG key passphrase (if set)
+The env file sets these Gradle properties (Gradle picks them up via
+`ORG_GRADLE_PROJECT_*`):
+
+- `mavenCentralUsername` — Central Portal user token name
+- `mavenCentralPassword` — Central Portal user token
+- `signingInMemoryKey` — ASCII-armored GPG private key
 
 `./run sdk:test:kotlin` runs `publishToMavenLocal` without signing, so
-day-to-day testing does not need these credentials.
+day-to-day testing does not need any credentials.
 
 ## License
 

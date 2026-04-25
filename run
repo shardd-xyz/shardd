@@ -453,17 +453,27 @@ cmd_sdk_publish_ts() {
 cmd_sdk_publish_kotlin() {
     local version="$1"
     _sdk_require_version kotlin "$version"
+
+    # Pick up persisted Central Portal credentials + ASCII-armored GPG key
+    # from infra/secrets/sdk-publish.env. The GPG passphrase is deliberately
+    # not stored on disk — prompt for it interactively if missing.
+    local secrets_file="infra/secrets/sdk-publish.env"
+    if [ -f "$secrets_file" ]; then
+        # shellcheck disable=SC1090
+        source "$secrets_file"
+    fi
+    if [ -z "${ORG_GRADLE_PROJECT_signingInMemoryKeyPassword:-}" ] && [ -t 0 ]; then
+        read -rsp "GPG passphrase: " ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
+        echo
+        export ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
+    fi
+
     # Bump version = "x.y.z" (first occurrence) in build.gradle.kts.
     sed -i "0,/^version = \".*\"$/{s//version = \"$version\"/}" sdks/kotlin/build.gradle.kts
     (cd sdks/kotlin && ./gradlew --no-daemon test publishToMavenLocal)
     echo
     echo "about to publish sdks/kotlin v$version to Maven Central"
     echo "this is permanent and cannot be overwritten"
-    # publishAndReleaseToMavenCentral uploads to the Central Portal and
-    # auto-releases. Requires ORG_GRADLE_PROJECT_mavenCentralUsername,
-    # ORG_GRADLE_PROJECT_mavenCentralPassword (Central Portal user token),
-    # ORG_GRADLE_PROJECT_signingInMemoryKey (ASCII-armored GPG private key),
-    # and ORG_GRADLE_PROJECT_signingInMemoryKeyPassword (if the key has one).
     (cd sdks/kotlin && ./gradlew --no-daemon publishAndReleaseToMavenCentral)
     echo
     echo "published xyz.shardd:sdk:$version to Maven Central"
