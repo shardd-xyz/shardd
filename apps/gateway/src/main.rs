@@ -851,6 +851,7 @@ async fn proxy_create_event(
         internal_bucket,
         request.event,
         rewrite_bucket,
+        false,
     )
     .await
 }
@@ -1084,7 +1085,7 @@ async fn internal_create_bucket_event(
     }
 
     let internal_bucket = internal_bucket_for_user(user_id, &bucket);
-    submit_create_event(&state, &bucket, internal_bucket, request, true).await
+    submit_create_event(&state, &bucket, internal_bucket, request, true, false).await
 }
 
 async fn submit_create_event(
@@ -1093,6 +1094,7 @@ async fn submit_create_event(
     internal_bucket: String,
     request: GatewayBucketEventRequest,
     rewrite_bucket: bool,
+    allow_reserved_bucket: bool,
 ) -> Response {
     if let Err(message) = shardd_types::validate_event_note(request.note.as_deref()) {
         return bad_request(&message);
@@ -1107,11 +1109,12 @@ async fn submit_create_event(
             "idempotency_nonce is required — generate a UUID v4 per logical operation and reuse it on retries",
         );
     };
-    let create_request = GatewayBucketEventRequest {
+    let mut create_request = GatewayBucketEventRequest {
         idempotency_nonce: Some(nonce),
         ..request
     }
     .into_create_request(internal_bucket);
+    create_request.allow_reserved_bucket = allow_reserved_bucket;
 
     match state
         .mesh
@@ -1191,6 +1194,10 @@ impl GatewayBucketEventRequest {
             max_overdraft: self.max_overdraft,
             min_acks: self.min_acks,
             ack_timeout_ms: self.ack_timeout_ms,
+            // Wire payload doesn't expose this, so external clients
+            // never set it. `submit_create_event` overwrites the value
+            // based on the route after this conversion.
+            allow_reserved_bucket: false,
         }
     }
 }
@@ -1593,13 +1600,16 @@ async fn internal_billing_create_event(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
-    // No bucket rewriting — use the bucket name as-is
+    // No bucket rewriting — use the bucket name as-is. The internal
+    // billing route is the only path that may target reserved buckets
+    // (e.g. `__billing__<user_id>`), so opt in here.
     submit_create_event(
         &state,
         &request.bucket,
         request.bucket.clone(),
         request.event,
         false,
+        true,
     )
     .await
 }
@@ -1690,6 +1700,8 @@ async fn billing_check_and_deduct(
         max_overdraft: Some(u64::MAX), // billing deductions always go through
         min_acks: None,
         ack_timeout_ms: None,
+        // Internal billing path writes into `__billing__<user_id>`.
+        allow_reserved_bucket: true,
     };
     // Fire-and-forget: don't block the user's request on the deduction write
     let mesh = state.mesh.clone();

@@ -107,11 +107,11 @@ pub async fn create_event<S: StorageBackend>(
     shardd_types::validate_event_note(req.note.as_deref()).map_err(NodeRpcError::invalid_input)?;
 
     // §3.5: clients must never be able to write to reserved buckets
-    // (the meta log, billing buckets, etc.). The node's internal code
-    // paths — e.g. billing service writes via the gateway's internal
-    // route — bypass this by calling state.create_local_events or
-    // state.create_meta_bucket_delete directly. Client RPC can't.
-    if shardd_types::is_reserved_bucket_name(&req.bucket) {
+    // (the meta log, billing buckets, etc.). The gateway's internal
+    // billing route opts in via `allow_reserved_bucket=true`; that
+    // flag isn't deserialized on the public `POST /events` path, so
+    // external clients cannot smuggle it in.
+    if !req.allow_reserved_bucket && shardd_types::is_reserved_bucket_name(&req.bucket) {
         return Err(NodeRpcError::invalid_input(format!(
             "bucket name '{}' is reserved",
             req.bucket
@@ -143,6 +143,7 @@ pub async fn create_event<S: StorageBackend>(
             req.note,
             max_overdraft,
             req.idempotency_nonce.clone(),
+            req.allow_reserved_bucket,
         )
         .await
     {

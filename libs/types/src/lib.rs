@@ -379,6 +379,12 @@ pub struct CreateEventRequest {
     pub min_acks: Option<u32>,
     #[serde(default)]
     pub ack_timeout_ms: Option<u64>,
+    /// Internal-only: set by the gateway's `/internal/billing/events`
+    /// route to write into reserved buckets (e.g. `__billing__<user>`).
+    /// Public RPC clients can never set this — the gateway's external
+    /// routes don't deserialize it from the wire payload.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub allow_reserved_bucket: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

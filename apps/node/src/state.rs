@@ -423,6 +423,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             note,
             max_overdraft,
             idempotency_nonce,
+            false,
         )
         .await
         .map(|result| result.charge_event)
@@ -436,11 +437,13 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         note: Option<String>,
         max_overdraft: u64,
         idempotency_nonce: String,
+        allow_reserved_bucket: bool,
     ) -> Result<LocalCreateResult, CreateLocalEventError> {
         // §3.5: reject writes to reserved and tombstoned buckets before
-        // any side effects. Clients must never be able to clobber the
-        // meta log or revive a deleted bucket name.
-        if is_reserved_bucket_name(&bucket) {
+        // any side effects. The `allow_reserved_bucket` opt-in is set
+        // by the gateway's internal billing route; client RPC paths
+        // never pass true.
+        if !allow_reserved_bucket && is_reserved_bucket_name(&bucket) {
             return Err(CreateLocalEventError::BucketReserved(bucket));
         }
         if self.deleted_buckets.contains_key(&bucket) {
@@ -1843,6 +1846,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
@@ -1854,6 +1858,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
@@ -1897,6 +1902,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
@@ -1908,6 +1914,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
@@ -1969,6 +1976,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
@@ -2046,6 +2054,7 @@ mod tests {
                 None,
                 0,
                 uuid::Uuid::new_v4().to_string(),
+                false,
             )
             .await
             .unwrap();
