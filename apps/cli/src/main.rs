@@ -162,6 +162,7 @@ async fn run_mesh(command: Commands, client: MeshClient) -> Result<()> {
                         max_overdraft: Some(max_overdraft),
                         min_acks: Some(min_acks),
                         ack_timeout_ms: Some(ack_timeout_ms),
+                        allow_reserved_bucket: false,
                     },
                 ))
                 .await?

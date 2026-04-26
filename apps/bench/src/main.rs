@@ -139,6 +139,7 @@ fn create_event_request(bucket: &str, account: &str, amount: i64) -> CreateEvent
         max_overdraft: None,
         min_acks: None,
         ack_timeout_ms: None,
+        allow_reserved_bucket: false,
     }
 }
 
