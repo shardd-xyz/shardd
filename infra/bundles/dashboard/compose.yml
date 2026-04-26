@@ -134,6 +134,14 @@ services:
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS}
       LANDING_ADDRESS: ${LANDING_ADDRESS:-shardd.xyz}
+      # Optional: when this host also runs an edge-node service in
+      # gateway-only mode (collapsed regional setup), the gateway's
+      # HTTP port is bound to 127.0.0.1 on the host. Caddy reaches it
+      # via host.docker.internal, mapped to the host gateway IP below.
+      LOCAL_GATEWAY_HOST: ${LOCAL_GATEWAY_HOST:-}
+      USE1_API_ADDRESS: ${USE1_API_ADDRESS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
       - "443:443"

@@ -44,6 +44,25 @@
 	}
 }
 
+# Optional regional API endpoint vhost. Active only when USE1_API_ADDRESS
+# is set (combined use1 host running the dashboard + a gateway-only edge
+# service). Reverse-proxies to the gateway container's host-bound port via
+# host.docker.internal:${LOCAL_GATEWAY_PORT}.
+{$USE1_API_ADDRESS:use1-disabled.invalid} {
+	encode gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	reverse_proxy host.docker.internal:{$LOCAL_GATEWAY_PORT:8080}
+}
+
 # shardd.xyz — public marketing site, served from the landing container.
 # Cloudflare proxies the apex; this vhost is the origin. Caddy auto-issues
 # a Let's Encrypt cert via HTTP-01 once DNS resolves to this host.

@@ -2,6 +2,15 @@ services:
   gateway:
     image: ${SHARDD_GATEWAY_IMAGE}
     container_name: ${SERVICE_NAME}-gateway
+    ports:
+      # Bind gateway HTTP port to host so a co-located reverse proxy
+      # (e.g. the dashboard's Caddy on the combined use1 host) can
+      # route to it via host.docker.internal:${GATEWAY_HOST_PORT}.
+      # Bound to all interfaces because docker doesn't expose a
+      # bridge-only bind, but UFW limits public ingress to 80/443/9000
+      # so 8080 stays reachable only from the host + co-resident
+      # containers + the tailnet.
+      - "${GATEWAY_HOST_PORT:-8080}:8080"
     environment:
       SHARDD_CLUSTER_KEY: ${SHARDD_CLUSTER_KEY}
       SHARDD_DASHBOARD_URL: ${SHARDD_DASHBOARD_URL}
@@ -37,6 +46,11 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: ${SERVICE_NAME}-caddy
+    # Gated behind a profile so the bundle can run gateway-only on hosts
+    # where another component (e.g. the dashboard's Caddy on a combined
+    # use1 host) already binds 80/443. Default deploys set
+    # COMPOSE_PROFILES=with-caddy to keep the historical behavior.
+    profiles: ["with-caddy"]
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS}
     depends_on:

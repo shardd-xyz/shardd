@@ -817,6 +817,15 @@ def build_service_env(
                 "SITE_ADDRESS": site_address,
             }
         )
+        # Caddy is gated behind the `with-caddy` profile so a co-located
+        # dashboard service can own 80/443 instead. `disable_caddy: true`
+        # in service vars skips activating the profile and exposes the
+        # gateway on the host port the dashboard's Caddy will proxy to.
+        disable_caddy = bool(service_vars.get("disable_caddy", False))
+        if not disable_caddy:
+            env_values["COMPOSE_PROFILES"] = "with-caddy"
+        gateway_host_port = int(service_vars.get("gateway_host_port", 8080))
+        env_values["GATEWAY_HOST_PORT"] = gateway_host_port
         public_edges = deployment.get("public_edges", [])
         if public_edges and not isinstance(public_edges, list):
             fail("deployment.public_edges must be a list when set")
@@ -882,6 +891,23 @@ def build_service_env(
                 "SITE_ADDRESS": service_vars.get("site_address", "http://:80"),
             }
         )
+        # If a co-located edge-node service is configured with
+        # `disable_caddy: true`, expose its public site_address +
+        # gateway host port to the dashboard's Caddy so the regional
+        # API endpoint can be terminated by the dashboard's Caddy.
+        for sibling in machine_def.get("services", []):
+            if sibling.get("bundle") != "edge-node":
+                continue
+            sibling_vars = sibling.get("vars", {}) or {}
+            if not sibling_vars.get("disable_caddy"):
+                continue
+            sibling_site = sibling_vars.get("site_address")
+            sibling_port = int(sibling_vars.get("gateway_host_port", 8080))
+            if sibling_site:
+                env_values["USE1_API_ADDRESS"] = sibling_site
+                env_values["LOCAL_GATEWAY_PORT"] = sibling_port
+                env_values["LOCAL_GATEWAY_HOST"] = "host.docker.internal"
+            break
         return env_values
 
     fail(f"unsupported bundle env rendering: {bundle_name}")
@@ -1117,9 +1143,10 @@ def machine_dns_records(machine_def: dict[str, Any]) -> list[dict[str, Any]]:
     add(machine_def.get("public_dns_name"), default_proxied)
     for service in machine_def.get("services", []):
         service_vars = service.get("vars", {})
-        add(service_vars.get("site_address"), default_proxied)
+        service_proxied = service_vars.get("proxied", default_proxied)
+        add(service_vars.get("site_address"), bool(service_proxied))
         if service.get("bundle") == "dashboard":
-            add(service_vars.get("app_origin"), default_proxied)
+            add(service_vars.get("app_origin"), bool(service_proxied))
 
     for entry in machine_def.get("extra_dns_names", []) or []:
         if isinstance(entry, str):
