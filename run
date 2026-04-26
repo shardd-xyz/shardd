@@ -206,11 +206,11 @@ cmd_migrations_check() {
 
     # source_dir | host | container | db | pg_user | label
     local pairs=(
-        "libs/storage/migrations|3.93.44.70|shardd-prod-use1-full-db|shardd|shardd|use1-full"
-        "libs/storage/migrations|18.159.52.211|shardd-prod-euc1-full-db|shardd|shardd|euc1-full"
-        "libs/storage/migrations|18.166.211.248|shardd-prod-ape1-full-db|shardd|shardd|ape1-full"
-        "apps/dashboard/migrations|52.90.198.47|shardd-prod-use1-dashboard-postgres|user_gateway|saassy|dashboard"
-        "apps/billing/migrations|52.90.198.47|shardd-prod-use1-dashboard-postgres|billing_db|saassy|billing"
+        "libs/storage/migrations|34.229.104.67|shardd-prod-use1-dashboard-1-full-node-2-db|shardd|shardd|use1-full"
+        "libs/storage/migrations|63.178.150.199|shardd-prod-euc1-1-full-node-1-db|shardd|shardd|euc1-full"
+        "libs/storage/migrations|43.199.203.177|shardd-prod-ape1-1-full-node-1-db|shardd|shardd|ape1-full"
+        "apps/dashboard/migrations|34.229.104.67|shardd-prod-use1-dashboard-1-dashboard-1-postgres|user_gateway|saassy|dashboard"
+        "apps/billing/migrations|34.229.104.67|shardd-prod-use1-dashboard-1-dashboard-1-postgres|billing_db|saassy|billing"
     )
 
     local issues=0
