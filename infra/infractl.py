@@ -170,6 +170,17 @@ IMAGE_SPECS: dict[str, ImageBuildSpec] = {
         context=ROOT_DIR,
         dockerfile=ROOT_DIR / "apps/billing/Dockerfile",
     ),
+    # Static landing site (vitepress SSG → caddy:2-alpine). Build context
+    # is apps/landing/ specifically so the image is independent of the
+    # rest of the workspace and doesn't need .git in context.
+    # GIT_SHA is injected via build-arg (the vitepress config picks it
+    # up via $GITHUB_SHA for the footer "build <sha>" link).
+    "shardd-landing": ImageBuildSpec(
+        key="shardd-landing",
+        tag="local/shardd-landing:infra",
+        context=ROOT_DIR / "apps" / "landing",
+        dockerfile=ROOT_DIR / "apps" / "landing" / "Dockerfile",
+    ),
 }
 
 
@@ -232,7 +243,7 @@ BUNDLE_SPECS: dict[str, BundleSpec] = {
     "dashboard": BundleSpec(
         "dashboard",
         BUNDLES_DIR / "dashboard",
-        ("shardd-dashboard", "shardd-billing"),
+        ("shardd-dashboard", "shardd-billing", "shardd-landing"),
     ),
 }
 
@@ -968,7 +979,13 @@ def inspect_local_image_ids(image_keys: set[str]) -> dict[str, str]:
     return image_ids
 
 
-def build_images(image_keys: set[str]) -> dict[str, str]:
+def build_images(image_keys: set[str], version: str | None = None) -> dict[str, str]:
+    """Build each requested image. `version` (when provided) is forwarded
+    as a `GIT_SHA` build-arg to every image — Dockerfiles that don't
+    declare `ARG GIT_SHA` ignore it. Used by shardd-landing to inject
+    the commit hash that ends up in the footer's "build <sha>" link
+    (the `.git` directory isn't in the build context, so we can't run
+    `git rev-parse` inside the build)."""
     built_ids: dict[str, str] = {}
     for image_key in sorted(image_keys):
         spec = IMAGE_SPECS[image_key]
@@ -985,7 +1002,10 @@ def build_images(image_keys: set[str]) -> dict[str, str]:
             "-f",
             str(spec.dockerfile),
         ]
-        for key, value in spec.build_args.items():
+        build_args = dict(spec.build_args)
+        if version and "GIT_SHA" not in build_args:
+            build_args["GIT_SHA"] = version
+        for key, value in build_args.items():
             cmd.extend(["--build-arg", f"{key}={value}"])
         cmd.append(str(spec.context))
         run_command(cmd)
@@ -1057,23 +1077,62 @@ def service_ports(machine_def: dict[str, Any]) -> list[int]:
 
 
 def machine_dns_names(machine_def: dict[str, Any]) -> list[str]:
-    names: list[str] = []
+    """Bare hostname list for a machine. Used by firewall/SSH/etc.;
+    callers that need the per-record proxied flag should use
+    `machine_dns_records()` instead."""
+    return [rec["name"] for rec in machine_dns_records(machine_def)]
+
+
+def machine_dns_records(machine_def: dict[str, Any]) -> list[dict[str, Any]]:
+    """All public DNS hostnames for a machine, paired with each
+    record's `proxied` flag. Default `proxied` is "true if any service
+    on this machine is the dashboard bundle, else false" (matches the
+    original behaviour). `extra_dns_names` may add hostnames; each
+    entry is either a bare string (inherits the default `proxied`) or
+    a `{"name": ..., "proxied": bool}` dict for per-record overrides
+    — required for cases like the apex `shardd.xyz` where ACME
+    HTTP-01 needs a brief DNS-only window before flipping to
+    Cloudflare-proxied.
+
+    See cluster.json:
+      "extra_dns_names": [
+          { "name": "shardd.xyz", "proxied": true },
+          "www.shardd.xyz"
+      ]
+    """
+    default_proxied = any(
+        service.get("bundle") == "dashboard" for service in machine_def.get("services", [])
+    )
+
+    records: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add(raw_value: str | None) -> None:
-        host = hostname_from_urlish(raw_value)
+    def add(raw_value: str | Any, proxied: bool) -> None:
+        host = hostname_from_urlish(raw_value if isinstance(raw_value, str) else None)
         if not host or host in seen:
             return
         seen.add(host)
-        names.append(host)
+        records.append({"name": host, "proxied": bool(proxied)})
 
-    add(machine_def.get("public_dns_name"))
+    add(machine_def.get("public_dns_name"), default_proxied)
     for service in machine_def.get("services", []):
         service_vars = service.get("vars", {})
-        add(service_vars.get("site_address"))
+        add(service_vars.get("site_address"), default_proxied)
         if service.get("bundle") == "dashboard":
-            add(service_vars.get("app_origin"))
-    return names
+            add(service_vars.get("app_origin"), default_proxied)
+
+    for entry in machine_def.get("extra_dns_names", []) or []:
+        if isinstance(entry, str):
+            add(entry, default_proxied)
+        elif isinstance(entry, dict):
+            name = entry.get("name")
+            proxied = entry.get("proxied", default_proxied)
+            add(name, bool(proxied))
+        else:
+            fail(
+                f"extra_dns_names entries must be strings or {{'name': ..., 'proxied': bool}} dicts, got {type(entry).__name__}"
+            )
+    return records
 
 
 def edge_api_machine_names(deployment: dict[str, Any]) -> set[str] | None:
@@ -1120,12 +1179,11 @@ def cloudflare_record_key(machine_name: str, hostname: str) -> str:
 def build_cloudflare_records(deployment: dict[str, Any]) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     for machine_name, machine_def in deployment["machines"].items():
-        proxied = any(service.get("bundle") == "dashboard" for service in machine_def.get("services", []))
-        for hostname in machine_dns_names(machine_def):
-            records[cloudflare_record_key(machine_name, hostname)] = {
-                "name": normalize_dns_name(hostname),
+        for entry in machine_dns_records(machine_def):
+            records[cloudflare_record_key(machine_name, entry["name"])] = {
+                "name": normalize_dns_name(entry["name"]),
                 "machine_name": machine_name,
-                "proxied": proxied,
+                "proxied": entry["proxied"],
             }
     return records
 
@@ -2456,7 +2514,7 @@ def command_deploy_apply(args: argparse.Namespace) -> None:
     if args.skip_build:
         image_ids = inspect_local_image_ids(needed_image_keys)
     else:
-        image_ids = build_images(needed_image_keys)
+        image_ids = build_images(needed_image_keys, version=version)
     missing = sorted(image_key for image_key in needed_image_keys if image_key not in image_ids)
     if missing:
         fail(f"local Docker image tags are missing: {', '.join(missing)}")

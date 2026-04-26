@@ -1,0 +1,1725 @@
+/* ============================================================ */
+/* shardd landing — operator console                             */
+/* Dark, flat, Geist-typed, mobile-first                         */
+/* ============================================================ */
+
+:root {
+  --sd-font-sans:
+    "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sd-font-mono:
+    "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+
+  /* Push Geist into VitePress's own variables too */
+  --vp-font-family-base: var(--sd-font-sans);
+  --vp-font-family-mono: var(--sd-font-mono);
+
+  /* Surfaces */
+  --vp-c-bg: #0a0a0a;
+  --vp-c-bg-alt: #0c0c0c;
+  --vp-c-bg-soft: #101010;
+  --vp-c-bg-elv: #111111;
+  --vp-c-gutter: #050505;
+
+  /* Borders */
+  --vp-c-divider: rgba(255, 255, 255, 0.08);
+  --vp-c-border: rgba(255, 255, 255, 0.12);
+
+  /* Text */
+  --vp-c-text-1: #f5f5f5;
+  --vp-c-text-2: #a1a1a1;
+  --vp-c-text-3: #6b6b6b;
+
+  /* Brand: Factory orange accent */
+  --vp-c-brand-1: #ef6f2e;
+  --vp-c-brand-2: #ee6018;
+  --vp-c-brand-3: #d15010;
+  --vp-c-brand-soft: rgba(239, 111, 46, 0.14);
+
+  /* Buttons */
+  --vp-button-brand-bg: #1f1d1c;
+  --vp-button-brand-hover-bg: #2e2c2b;
+  --vp-button-brand-active-bg: #1f1d1c;
+  --vp-button-brand-text: #fafafa;
+  --vp-button-brand-hover-text: #fafafa;
+  --vp-button-brand-active-text: #fafafa;
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-active-border: transparent;
+
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-hover-bg: rgba(255, 255, 255, 0.04);
+  --vp-button-alt-active-bg: rgba(255, 255, 255, 0.06);
+  --vp-button-alt-text: #f5f5f5;
+  --vp-button-alt-hover-text: #ffffff;
+  --vp-button-alt-active-text: #ffffff;
+  --vp-button-alt-border: rgba(255, 255, 255, 0.16);
+  --vp-button-alt-hover-border: rgba(255, 255, 255, 0.32);
+  --vp-button-alt-active-border: rgba(255, 255, 255, 0.32);
+}
+
+html,
+body {
+  background: var(--vp-c-bg);
+  font-family: var(--sd-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================ */
+/* Nav bar                                                       */
+/* ============================================================ */
+
+.VPNavBar {
+  background: rgba(10, 10, 10, 0.72) !important;
+  backdrop-filter: saturate(1.2) blur(14px);
+  -webkit-backdrop-filter: saturate(1.2) blur(14px);
+}
+.VPNavBar.has-sidebar .content,
+.VPNavBar .divider {
+  border-color: var(--vp-c-divider) !important;
+}
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .text {
+  font-family: var(--sd-font-mono) !important;
+  font-size: 12px !important;
+  letter-spacing: -0.015rem !important;
+  text-transform: uppercase !important;
+  color: var(--vp-c-text-2) !important;
+}
+.VPNavBarMenuLink:hover {
+  color: #ffffff !important;
+}
+.VPNavBarTitle .title {
+  font-family: var(--sd-font-sans) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+}
+
+/* ============================================================ */
+/* Home page container reset                                     */
+/* Drop VPPage padding/max-width so the custom home is free      */
+/* ============================================================ */
+
+.VPContent.sd-home-page,
+.sd-home-page {
+  padding: 0 !important;
+  max-width: none !important;
+}
+.sd-home-page .VPPage {
+  padding: 0 !important;
+  max-width: none !important;
+}
+
+/* ============================================================ */
+/* Custom home: SdHome component                                 */
+/* ============================================================ */
+
+.sd-home {
+  position: relative;
+  color: var(--vp-c-text-1);
+  font-family: var(--sd-font-sans);
+  isolation: isolate;
+}
+
+/* Grain overlay — fixed, very subtle */
+.sd-grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ============================================================ */
+/* Hero                                                          */
+/* ============================================================ */
+
+.sd-hero {
+  position: relative;
+  padding: 140px 32px 100px;
+  overflow: hidden;
+}
+
+.sd-hero-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 72px 72px;
+  background-position: center top;
+  -webkit-mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 20%,
+    #000 20%,
+    transparent 75%
+  );
+  mask-image: radial-gradient(
+    ellipse 80% 60% at 50% 20%,
+    #000 20%,
+    transparent 75%
+  );
+}
+
+.sd-hero::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -200px;
+  width: 1000px;
+  height: 500px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(239, 111, 46, 0.06),
+    transparent 60%
+  );
+  filter: blur(40px);
+  z-index: 0;
+}
+
+.sd-hero-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+/* Status meta line */
+.sd-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--sd-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--vp-c-text-3);
+  margin-bottom: 32px;
+}
+.sd-meta-text {
+  text-transform: lowercase;
+}
+/* Meta: offline / resolving state dims the label */
+.sd-meta[data-state="offline"] .sd-meta-text,
+.sd-meta[data-state="loading"] .sd-meta-text {
+  color: #5a5a5a;
+}
+
+/* Pulse dot — default cyan (live / healthy) */
+.sd-pulse {
+  --pulse-color: 239, 111, 46; /* orange */
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+}
+.sd-pulse-sm {
+  width: 7px;
+  height: 7px;
+}
+.sd-pulse-dot {
+  position: absolute;
+  inset: 0;
+  background: rgb(var(--pulse-color));
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(var(--pulse-color), 0.6);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+.sd-pulse::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: rgba(var(--pulse-color), 0.5);
+  animation: sd-ping 2.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes sd-ping {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.7;
+  }
+  80%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* Scope pulse colors based on state */
+.sd-meta[data-state="offline"] .sd-pulse,
+.sd-region[data-status="offline"] .sd-pulse {
+  --pulse-color: 107, 107, 107; /* grey */
+}
+.sd-meta[data-state="offline"] .sd-pulse::before,
+.sd-region[data-status="offline"] .sd-pulse::before {
+  animation: none;
+  background: transparent;
+}
+.sd-region[data-status="degraded"] .sd-pulse {
+  --pulse-color: 251, 191, 36; /* amber */
+}
+.sd-meta[data-state="loading"] .sd-pulse {
+  --pulse-color: 161, 161, 161;
+}
+
+/* Hero headline */
+.sd-title {
+  font-family: var(--sd-font-sans);
+  font-size: clamp(44px, 9vw, 112px);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 0.96;
+  color: #ffffff;
+  margin: 0;
+  max-width: 14ch;
+}
+
+/* Hero row: copy on top, regions panel below (full-width) so the map has
+ * room to render continents legibly. Falls back to stacked on narrow
+ * screens naturally. */
+.sd-hero-row {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+  align-items: stretch;
+  margin-top: 56px;
+}
+
+.sd-hero-col {
+  max-width: 720px;
+}
+
+.sd-tagline {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--vp-c-text-2);
+  margin: 0;
+}
+
+.sd-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 36px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================ */
+/* Buttons                                                       */
+/* ============================================================ */
+
+.sd-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 4px;
+  font-family: var(--sd-font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: -0.015rem;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: opacity 150ms ease, border-color 150ms ease, color 150ms ease;
+  border: 1px solid transparent;
+}
+.sd-btn:hover {
+  text-decoration: none;
+}
+.sd-btn-stripe {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0px, transparent 2px,
+    rgba(138, 131, 128, 0.5) 2px,
+    rgba(138, 131, 128, 0.5) 3px,
+    transparent 3px, transparent 5px
+  );
+  background-size: 7.07px 7.07px;
+  animation: slidePattern 2s linear infinite;
+}
+@keyframes slidePattern {
+  0% { background-position: 0 0; }
+  100% { background-position: 28.28px -28.28px; }
+}
+.sd-btn:hover .sd-btn-stripe {
+  opacity: 1;
+}
+.sd-btn > span,
+.sd-btn > svg {
+  position: relative;
+  z-index: 1;
+}
+.sd-btn-primary {
+  background: #1f1d1c;
+  color: #fafafa;
+  border-color: #4d4947;
+}
+.sd-btn-primary:hover {
+  opacity: 0.85;
+}
+.sd-btn-ghost {
+  background: transparent;
+  color: #f5f5f5;
+  border-color: #4d4947;
+}
+.sd-btn-ghost:hover {
+  border-color: #5c5855;
+  color: #ffffff;
+}
+.sd-btn-arrow {
+  transition: transform 200ms ease;
+}
+.sd-btn:hover .sd-btn-arrow {
+  transform: translateX(3px);
+}
+
+/* ============================================================ */
+/* Regions panel                                                 */
+/* ============================================================ */
+
+.sd-regions {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(13, 13, 13, 0.9), rgba(10, 10, 10, 0.9));
+  backdrop-filter: blur(10px);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: var(--sd-font-mono);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 30px 80px -30px rgba(0, 0, 0, 0.7);
+}
+
+.sd-regions-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  gap: 12px;
+}
+.sd-regions-label {
+  color: #ef6f2e;
+  transition: color 200ms ease;
+}
+.sd-regions[data-state="offline"] .sd-regions-label {
+  color: #6b6b6b;
+}
+.sd-regions-count {
+  font-feature-settings: "tnum";
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.sd-regions-num {
+  color: #f5f5f5;
+}
+.sd-regions[data-state="offline"] .sd-regions-num {
+  color: #6b6b6b;
+}
+.sd-regions-state {
+  color: #ef6f2e;
+  margin-left: 6px;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+.sd-regions[data-state="offline"] .sd-regions-state {
+  color: #6b6b6b;
+}
+.sd-regions[data-state="loading"] .sd-regions-state {
+  color: #a1a1a1;
+}
+
+.sd-regions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sd-region {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 160ms ease, opacity 200ms ease;
+}
+.sd-region:last-child {
+  border-bottom: none;
+}
+.sd-region:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.sd-region[data-status="offline"] {
+  opacity: 0.55;
+}
+.sd-region-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.sd-region-name {
+  min-width: 0;
+}
+.sd-region-code {
+  font-size: 13px;
+  color: #f5f5f5;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.sd-region-city {
+  font-size: 11px;
+  color: var(--vp-c-text-3);
+  margin-top: 2px;
+  text-transform: lowercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sd-region-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.sd-region-spark {
+  width: 56px;
+  height: 16px;
+  overflow: visible;
+}
+.sd-region-spark polyline {
+  fill: none;
+  stroke: #ef6f2e;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.88;
+}
+.sd-region[data-status="offline"] .sd-region-spark polyline {
+  stroke: #6b6b6b;
+  opacity: 0.4;
+}
+.sd-region[data-status="degraded"] .sd-region-spark polyline {
+  stroke: #f59e0b;
+}
+.sd-region-lat {
+  font-feature-settings: "tnum";
+  color: #f5f5f5;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sd-region-num {
+  font-size: 15px;
+  font-weight: 500;
+}
+.sd-region-unit {
+  font-size: 11px;
+  color: var(--vp-c-text-3);
+  margin-left: 2px;
+}
+.sd-regions-foot {
+  padding: 10px 18px;
+  font-size: 10px;
+  color: #5a5a5a;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  text-transform: lowercase;
+  letter-spacing: 0.05em;
+}
+
+/* ============================================================ */
+/* Bento feature grid                                            */
+/* ============================================================ */
+
+.sd-bento {
+  position: relative;
+  padding: 120px 32px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.sd-section-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.sd-section-head {
+  margin-bottom: 48px;
+}
+.sd-section-label {
+  display: inline-block;
+  font-family: var(--sd-font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+  letter-spacing: 0.02em;
+  margin-bottom: 16px;
+}
+.sd-section-title {
+  font-size: clamp(28px, 4.4vw, 44px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: #ffffff;
+  margin: 0;
+  max-width: 24ch;
+}
+
+.sd-bento-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 16px;
+}
+.sd-card {
+  position: relative;
+  padding: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0c0c0c;
+  border-radius: 4px;
+  transition: border-color 200ms ease, background 200ms ease;
+  overflow: hidden;
+}
+.sd-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 100% 0%,
+    rgba(34, 211, 238, 0.06),
+    transparent 40%
+  );
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.sd-card:hover {
+  border-color: rgba(34, 211, 238, 0.3);
+  background: #0e0e0e;
+}
+.sd-card:hover::before {
+  opacity: 1;
+}
+.sd-card-lg {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  padding: 40px;
+}
+.sd-card-wide {
+  grid-column: 2 / 4;
+}
+.sd-card-num {
+  font-family: var(--sd-font-mono);
+  font-size: 11px;
+  color: var(--vp-c-text-3);
+  letter-spacing: 0.1em;
+  margin-bottom: 28px;
+}
+.sd-card-title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #ffffff;
+  margin: 0 0 12px;
+}
+.sd-card-lg .sd-card-title {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+.sd-card-body {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+  margin: 0;
+  max-width: 44ch;
+}
+
+/* ============================================================ */
+/* CTA section                                                   */
+/* ============================================================ */
+
+.sd-cta {
+  position: relative;
+  padding: 100px 32px 120px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+.sd-cta-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 40px;
+  flex-wrap: wrap;
+}
+.sd-cta-text {
+  flex: 1 1 400px;
+}
+.sd-cta-title {
+  font-size: clamp(32px, 5.2vw, 56px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: #ffffff;
+  margin: 0;
+}
+.sd-cta-sub {
+  color: var(--vp-c-text-2);
+  margin: 16px 0 0;
+  font-size: 16px;
+}
+.sd-cta-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================ */
+/* Staggered reveal on mount                                     */
+/* ============================================================ */
+
+.sd-home [data-delay] {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 720ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 720ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.sd-home.loaded [data-delay="0"] {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0ms;
+}
+.sd-home.loaded [data-delay="1"] {
+  opacity: 1;
+  transform: none;
+  transition-delay: 90ms;
+}
+.sd-home.loaded [data-delay="2"] {
+  opacity: 1;
+  transform: none;
+  transition-delay: 180ms;
+}
+.sd-home.loaded [data-delay="3"] {
+  opacity: 1;
+  transform: none;
+  transition-delay: 270ms;
+}
+.sd-home.loaded [data-delay="4"] {
+  opacity: 1;
+  transform: none;
+  transition-delay: 360ms;
+}
+
+/* ============================================================ */
+/* Mobile                                                        */
+/* ============================================================ */
+
+@media (max-width: 960px) {
+  .sd-hero {
+    padding: 110px 20px 72px;
+  }
+  .sd-hero-row {
+    grid-template-columns: 1fr;
+    gap: 40px;
+    margin-top: 44px;
+  }
+  .sd-title {
+    max-width: none;
+  }
+
+  .sd-bento {
+    padding: 88px 20px;
+  }
+  .sd-bento-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    gap: 14px;
+  }
+  .sd-card,
+  .sd-card-lg,
+  .sd-card-wide {
+    grid-column: auto;
+    grid-row: auto;
+    padding: 28px;
+  }
+  .sd-card-lg .sd-card-title {
+    font-size: 22px;
+  }
+
+  .sd-cta {
+    padding: 80px 20px 100px;
+  }
+  .sd-cta-inner {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .sd-hero {
+    padding: 96px 18px 64px;
+  }
+  .sd-title {
+    /* break after "that" naturally */
+    font-size: clamp(40px, 12vw, 72px);
+  }
+  .sd-actions,
+  .sd-cta-actions {
+    width: 100%;
+  }
+  .sd-actions .sd-btn,
+  .sd-cta-actions .sd-btn {
+    flex: 1 1 auto;
+    min-width: 140px;
+  }
+  .sd-regions {
+    border-radius: 5px;
+  }
+  .sd-bento,
+  .sd-cta {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+/* ============================================================ */
+/* Reduced motion                                                */
+/* ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-home [data-delay] {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  .sd-pulse::before {
+    animation: none;
+  }
+  .sd-btn {
+    transition: none;
+  }
+}
+
+/* ============================================================ */
+/* Doc pages (quickstart, architecture, etc.) — dark polish      */
+/* ============================================================ */
+
+.vp-doc a {
+  color: var(--vp-c-brand-1);
+  text-decoration-thickness: 0.08em;
+}
+.vp-doc code {
+  font-family: var(--sd-font-mono);
+}
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  font-family: var(--sd-font-sans);
+  letter-spacing: -0.02em;
+}
+.vp-doc h2 {
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 32px;
+  margin-top: 56px;
+}
+.vp-doc pre,
+.vp-doc div[class*="language-"] {
+  border: 1px solid var(--vp-c-divider);
+  background: #0c0c0c !important;
+  border-radius: 4px;
+}
+.vp-doc div[class*="language-"] pre {
+  border: none;
+}
+
+/* Sidebar */
+.VPSidebar {
+  background: var(--vp-c-bg) !important;
+  border-right: 1px solid var(--vp-c-divider);
+}
+.VPSidebarItem .text {
+  font-family: var(--sd-font-sans);
+}
+
+/* Footer */
+.VPFooter {
+  background: var(--vp-c-bg) !important;
+  border-top: 1px solid var(--vp-c-divider) !important;
+  color: var(--vp-c-text-3);
+}
+.VPFooter .message,
+.VPFooter .copyright {
+  font-family: var(--sd-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+/* ============================================================ */
+/* Edge mesh minimap                                            */
+/* ============================================================ */
+
+.sd-regions-body {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+  gap: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.sd-regions-body-left {
+  min-width: 0;
+}
+.sd-regions-body-right {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Stack the map on top of the list when the hero gets narrow — otherwise
+ * the map shrinks until continents are unreadable. */
+@media (max-width: 860px) {
+  .sd-regions-body {
+    grid-template-columns: 1fr;
+  }
+  .sd-regions-body-right {
+    border-left: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+}
+
+.sd-map {
+  padding: 20px 24px 8px;
+}
+.sd-regions-body-left .sd-map-caption {
+  margin: 10px 24px 14px;
+}
+
+.sd-map-inner {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+}
+
+.sd-map-bg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.sd-map-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.sd-map-link {
+  /* Thin dotted line: 0.6u dash + 3u gap with round linecap gives a
+   * subtle trail of dots rather than a heavy chain. */
+  stroke: #ef6f2e;
+  stroke-width: 0.7;
+  stroke-linecap: round;
+  stroke-dasharray: 0.35 2.2;
+  fill: none;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.sd-map-link-offline { opacity: 0.35; }
+
+/* Invisible wide hit area for grabbing the line anywhere along its length. */
+.sd-map-link-hit {
+  stroke: transparent;
+  stroke-width: 6;
+  fill: none;
+  pointer-events: stroke;
+  cursor: grab;
+  touch-action: none;
+}
+.sd-map-link-hit:active { cursor: grabbing; }
+
+.sd-map-edge {
+  /* Always orange. Status info reads from the right-hand table — here the
+   * color says "this is a shardd edge, not a city". */
+  fill: #ef6f2e;
+  pointer-events: none;
+}
+.sd-map-edge-degraded { fill: #fbbf24; }
+.sd-map-edge-offline { fill: #5c5855; }
+
+.sd-map-edge-halo {
+  fill: #ef6f2e;
+  opacity: 0.2;
+  pointer-events: none;
+}
+.sd-map-edge-halo-offline { fill: #5c5855; opacity: 0.25; }
+
+.sd-map-you {
+  fill: #eee;
+  pointer-events: none;
+}
+
+.sd-map-you-halo {
+  fill: none;
+  stroke: #eee;
+  stroke-width: 0.5;
+  animation: sdMapPulse 2s ease-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+  pointer-events: none;
+}
+
+@keyframes sdMapPulse {
+  0%   { transform: scale(0.8); opacity: 0.9; }
+  70%  { transform: scale(2.4); opacity: 0; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+.sd-map-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: var(--sd-font-mono);
+  font-size: 11px;
+  color: #a49d9a;
+  white-space: nowrap;
+  line-height: 1.25;
+  text-align: center;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+  padding: 3px 7px;
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px dotted #ef6f2e;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.sd-map-label-offline { border-color: #5c5855; }
+.sd-map-label-degraded { border-color: #fbbf24; }
+.sd-map-label:active,
+.sd-map-label-drag { cursor: grabbing; }
+.sd-map-label-code {
+  display: block;
+  color: #b8b3b0;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.sd-map-label-rtt {
+  color: #8a8380;
+}
+.sd-map-label-healthy .sd-map-label-rtt { color: #ef6f2e; }
+.sd-map-label-degraded .sd-map-label-rtt { color: #fbbf24; }
+.sd-map-label-unit { opacity: 0.65; }
+
+.sd-map-you-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: var(--sd-font-mono);
+  font-size: 10px;
+  color: #eee;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+  padding: 3px 7px;
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px dotted #ef6f2e;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.sd-map-you-label:active,
+.sd-map-you-label.sd-map-label-drag { cursor: grabbing; }
+
+.sd-map-caption {
+  margin: 10px 18px 14px;
+  font-family: var(--sd-font-mono);
+  font-size: 11px;
+  color: #8a8380;
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 18px;
+}
+.sd-map-contact {
+  color: #5c5855;
+}
+.sd-map-contact a {
+  color: #ef6f2e;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.sd-map-contact a:hover {
+  color: #ee6018;
+}
+
+/* ============================================================ */
+/* "How it flows" — clients · edges · nodes · gossip            */
+/*                                                                */
+/* Four-column grid laid out left → right. Two clients fire      */
+/* `charge` calls concurrently to their nearest edge; the edge   */
+/* routes to a node; the node creates a `hold` event reserving   */
+/* balance and gossips it to every peer. The right-most column   */
+/* is a live event log. The ledger below itemizes holds per      */
+/* holder so it's clear who is reserving what.                   */
+/* ============================================================ */
+
+.sd-howflow {
+  /* Single tunable knob — bumping the cycle stretches every
+   * keyframe percentage proportionally. */
+  --howflow-cycle: 9s;
+  padding: 120px 32px 100px;
+  border-top: 1px solid var(--vp-c-divider);
+  position: relative;
+}
+.sd-howflow .sd-section-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.sd-howflow-stage {
+  position: relative;
+  margin-top: 56px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background:
+    radial-gradient(
+      ellipse 60% 80% at 30% 50%,
+      rgba(239, 111, 46, 0.025),
+      transparent 70%
+    ),
+    rgba(10, 10, 10, 0.65);
+  overflow: hidden;
+}
+
+/* ---- Column header strip ---- */
+
+.sd-howflow-headers {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr 1.1fr 1.4fr;
+  gap: 14px;
+  padding: 14px 20px 0;
+}
+.sd-howflow-col-head {
+  font-family: var(--sd-font-mono);
+  font-size: 10.5px;
+  color: #6b6b6b;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+/* ---- 4-column grid: clients · edges · nodes · events ---- */
+
+.sd-howflow-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr 1.1fr 1.4fr;
+  grid-template-rows: repeat(3, 110px);
+  column-gap: 14px;
+  row-gap: 12px;
+  padding: 12px 20px 20px;
+}
+
+/* Faint vertical dividers between columns to anchor the four-pillar
+ * structure visually. Implemented as a single layered gradient so
+ * row gaps stay clean. */
+.sd-howflow-grid::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 20px;
+  left: 20px;
+  right: 20px;
+  pointer-events: none;
+  background:
+    linear-gradient(to right,
+      transparent calc((1.1 / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc((1.1 / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc((1.1 / 4.5) * 100% - 7px + 1px),
+      transparent calc((1.1 / 4.5) * 100% - 7px + 1px)),
+    linear-gradient(to right,
+      transparent calc(((1.1 + 0.9) / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc(((1.1 + 0.9) / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc(((1.1 + 0.9) / 4.5) * 100% - 7px + 1px),
+      transparent calc(((1.1 + 0.9) / 4.5) * 100% - 7px + 1px)),
+    linear-gradient(to right,
+      transparent calc(((1.1 + 0.9 + 1.1) / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc(((1.1 + 0.9 + 1.1) / 4.5) * 100% - 7px),
+      rgba(255, 255, 255, 0.05) calc(((1.1 + 0.9 + 1.1) / 4.5) * 100% - 7px + 1px),
+      transparent calc(((1.1 + 0.9 + 1.1) / 4.5) * 100% - 7px + 1px));
+}
+
+.sd-howflow-cell {
+  position: relative;
+  font-family: var(--sd-font-mono);
+}
+.sd-howflow-cell-empty {
+  /* spacer for the EUC1 row's clients column */
+}
+
+/* ---- Client cells ---- */
+
+.sd-howflow-client {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(8, 8, 8, 0.85);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+.sd-howflow-client-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #b8b3b0;
+  letter-spacing: 0.04em;
+}
+.sd-howflow-client-id {
+  text-transform: lowercase;
+}
+/* Tiny pulse dot to communicate "this is a live client". */
+.sd-howflow-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+  flex: 0 0 6px;
+}
+.sd-howflow-client-call {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #ef6f2e;
+  background: rgba(239, 111, 46, 0.08);
+  border: 1px solid rgba(239, 111, 46, 0.2);
+  border-radius: 3px;
+  padding: 5px 7px;
+  letter-spacing: 0.01em;
+  font-family: var(--sd-font-mono);
+}
+.sd-howflow-client-ack {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: #10b981;
+  letter-spacing: 0.04em;
+  opacity: 0;
+}
+/* Acknowledgment line — always visible while sim is playing
+ * since each row's client is making real calls. */
+.sd-howflow-playing .sd-howflow-client-ack {
+  opacity: 1;
+}
+
+/* ---- Edge cells ---- */
+
+.sd-howflow-edge {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 14px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(8, 8, 8, 0.85);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+.sd-howflow-edge-code {
+  font-size: 14px;
+  font-weight: 600;
+  color: #d4cfcc;
+  letter-spacing: 0.1em;
+}
+.sd-howflow-edge-city {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: #6b6b6b;
+  letter-spacing: 0.02em;
+}
+.sd-howflow-edge-passive {
+  opacity: 0.85;
+}
+
+/* Active rows (USE1 / APE1) get a subtle persistent orange border
+ * while the sim is running — they're the ones taking traffic. */
+.sd-howflow-playing .sd-howflow-row-a.sd-howflow-edge,
+.sd-howflow-playing .sd-howflow-row-b.sd-howflow-edge {
+  border-color: rgba(239, 111, 46, 0.35);
+}
+
+/* ---- Node cells ---- */
+
+.sd-howflow-nodes {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  text-align: center;
+  padding: 12px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(8, 8, 8, 0.85);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+.sd-howflow-nodes-tag {
+  font-size: 10px;
+  color: #6b6b6b;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+.sd-howflow-nodes-row {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+.sd-howflow-node {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--vp-c-bg);
+  border: 1px solid rgba(239, 111, 46, 0.4);
+  transition:
+    background 200ms ease,
+    box-shadow 200ms ease,
+    border-color 200ms ease;
+}
+/* Live "+ hold $X · ttl ..." line under each row's nodes —
+ * shown only while the row has an active hold. */
+.sd-howflow-nodes-emit-live {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: #ef6f2e;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.sd-howflow-nodes-recv {
+  margin-top: 10px;
+  font-size: 10px;
+  color: #6b6b6b;
+  letter-spacing: 0.02em;
+}
+.sd-howflow-playing .sd-howflow-nodes-recv {
+  color: #8a8380;
+}
+
+/* Chosen nodes for the active rows + EUC1's converged node stay
+ * lit while the sim is running — each is the node that holds the
+ * reservation under its own id. */
+.sd-howflow-playing .sd-howflow-node-chosen-a,
+.sd-howflow-playing .sd-howflow-node-chosen-b,
+.sd-howflow-playing .sd-howflow-node-eu-chosen {
+  background: #ef6f2e;
+  box-shadow: 0 0 10px rgba(239, 111, 46, 0.55);
+}
+
+/* Peer nodes (every other dot in every region) get the
+ * "received via gossip" treatment — a softer fill so it's clear
+ * they have the data but didn't author the hold. */
+.sd-howflow-playing .sd-howflow-node-gossip {
+  background: rgba(239, 111, 46, 0.25);
+  border-color: rgba(239, 111, 46, 0.55);
+}
+
+/* ---- Gossip events panel ---- */
+
+.sd-howflow-events {
+  grid-column: 4;
+  grid-row: 1 / span 3;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(239, 111, 46, 0.18);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 24px,
+      transparent 24px,
+      transparent 48px
+    ),
+    rgba(6, 6, 6, 0.92);
+  font-family: var(--sd-font-mono);
+  overflow: hidden;
+}
+.sd-howflow-events-header {
+  padding: 10px 14px;
+  font-size: 10px;
+  color: #ef6f2e;
+  border-bottom: 1px solid rgba(239, 111, 46, 0.15);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+.sd-howflow-events-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+.sd-howflow-event {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(15, 15, 15, 0.85);
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.sd-howflow-event-prefix {
+  color: #ef6f2e;
+  font-size: 12px;
+  line-height: 1;
+  margin-top: 2px;
+  font-weight: 600;
+  flex: 0 0 12px;
+}
+.sd-howflow-event-payload {
+  font-size: 11.5px;
+  color: #d4cfcc;
+  letter-spacing: 0.01em;
+}
+.sd-howflow-event-source {
+  margin-top: 3px;
+  font-size: 10px;
+  color: #6b6b6b;
+}
+.sd-howflow-event-deposit { border-color: rgba(16, 185, 129, 0.35); }
+.sd-howflow-event-deposit .sd-howflow-event-prefix { color: #10b981; }
+.sd-howflow-event-renew   { border-color: rgba(239, 111, 46, 0.4); }
+.sd-howflow-event-expire  .sd-howflow-event-prefix { color: #6b6b6b; }
+.sd-howflow-event-consume .sd-howflow-event-prefix { color: #b8b3b0; }
+.sd-howflow-event-idle    { opacity: 0.4; }
+
+.sd-howflow-events-foot {
+  padding: 10px 14px 12px;
+  font-size: 10.5px;
+  color: #8a8380;
+  letter-spacing: 0.02em;
+}
+
+/* TransitionGroup enter/leave for events as they push in/out. */
+.sd-howflow-event-enter-from {
+  opacity: 0;
+  transform: translateX(-8px);
+  border-color: rgba(239, 111, 46, 0.6);
+  box-shadow: 0 0 14px rgba(239, 111, 46, 0.25);
+}
+.sd-howflow-event-enter-active {
+  transition: opacity 220ms ease, transform 220ms ease,
+    border-color 600ms ease, box-shadow 600ms ease;
+}
+.sd-howflow-event-leave-from {
+  opacity: 1;
+}
+.sd-howflow-event-leave-to {
+  opacity: 0;
+  transform: translateX(8px);
+}
+.sd-howflow-event-leave-active {
+  transition: opacity 200ms ease, transform 200ms ease;
+  position: absolute;
+}
+.sd-howflow-event-move {
+  transition: transform 240ms ease;
+}
+
+/* Packets are no longer keyframed — the live sim is conveyed
+ * through the events log + holders list + ledger numbers. The
+ * packet elements are kept hidden but in the DOM so removing
+ * them later is a single CSS change instead of a template edit. */
+.sd-howflow-packet {
+  display: none;
+}
+
+/* ---- Ledger with itemized holds ---- */
+
+.sd-howflow-ledger {
+  margin-top: 24px;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 4px;
+  background: rgba(10, 10, 10, 0.65);
+  font-family: var(--sd-font-mono);
+}
+.sd-howflow-ledger-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 16px 22px;
+  min-width: 0;
+}
+.sd-howflow-ledger-holds {
+  flex: 1.6;
+}
+.sd-howflow-ledger-divider {
+  width: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.sd-howflow-ledger-label {
+  font-size: 10px;
+  color: #6b6b6b;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sd-howflow-ledger-val {
+  margin-top: 8px;
+  font-size: 18px;
+  color: #d4cfcc;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.sd-howflow-holders {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sd-howflow-holder {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  background: rgba(15, 15, 15, 0.6);
+  font-variant-numeric: tabular-nums;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.sd-howflow-holder-id {
+  color: #b8b3b0;
+  letter-spacing: 0.02em;
+}
+.sd-howflow-holder-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.sd-howflow-holder-amt {
+  color: #ef6f2e;
+  font-weight: 500;
+}
+.sd-howflow-holder-of {
+  color: #6b6b6b;
+  font-size: 10.5px;
+}
+.sd-howflow-holder-ttl {
+  color: #8a8380;
+  font-size: 10.5px;
+  min-width: 32px;
+  text-align: right;
+}
+.sd-howflow-holder-ttl-low {
+  color: #fbbf24;
+}
+.sd-howflow-holder-empty {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.04);
+  color: #6b6b6b;
+  font-size: 11.5px;
+  background: transparent;
+  justify-content: flex-start;
+}
+.sd-howflow-ledger-sublabel {
+  color: #6b6b6b;
+  font-size: 9.5px;
+  margin-left: 4px;
+}
+
+/* TransitionGroup enter/leave for holders. */
+.sd-howflow-holder-enter-from {
+  opacity: 0;
+  transform: translateX(-8px);
+  border-color: rgba(239, 111, 46, 0.7);
+  box-shadow: 0 0 14px rgba(239, 111, 46, 0.25);
+}
+.sd-howflow-holder-enter-active {
+  transition: opacity 220ms ease, transform 220ms ease,
+    border-color 600ms ease, box-shadow 600ms ease;
+}
+.sd-howflow-holder-leave-to {
+  opacity: 0;
+  transform: translateX(8px);
+}
+.sd-howflow-holder-leave-active {
+  transition: opacity 200ms ease, transform 200ms ease;
+  position: absolute;
+}
+.sd-howflow-holder-move {
+  transition: transform 240ms ease;
+}
+
+.sd-howflow-caption {
+  margin: 28px auto 0;
+  max-width: 780px;
+  text-align: center;
+  font-family: var(--sd-font-mono);
+  font-size: 12px;
+  color: #8a8380;
+  letter-spacing: 0.01em;
+  line-height: 1.7;
+}
+.sd-howflow-caption code {
+  background: rgba(239, 111, 46, 0.08);
+  border: 1px solid rgba(239, 111, 46, 0.2);
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: #ef6f2e;
+  font-size: 11.5px;
+}
+
+/* ---- Mobile: drop the events panel into its own row below ---- */
+
+@media (max-width: 880px) {
+  .sd-howflow {
+    padding: 88px 16px 80px;
+  }
+  .sd-howflow-headers {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .sd-howflow-headers .sd-howflow-col-head:nth-child(4) {
+    display: none;
+  }
+  .sd-howflow-grid {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: repeat(3, 110px) auto;
+  }
+  .sd-howflow-grid::before {
+    display: none;
+  }
+  .sd-howflow-events {
+    grid-column: 1 / span 3;
+    grid-row: 4;
+    margin-top: 10px;
+  }
+  .sd-howflow-packet {
+    display: none;
+  }
+}
+
+/* Below ~600px, packing client/edge/nodes side-by-side fights for
+   space and the long `client.charge($0.005–0.10)` call wraps weirdly.
+   Stack the 9 cells (3 rows × 3 cols) into a single column instead;
+   document order already runs row-by-row (client → edge → nodes),
+   so the resulting list reads top-to-bottom as a flow. */
+@media (max-width: 600px) {
+  .sd-howflow {
+    padding: 64px 12px 60px;
+  }
+  .sd-howflow-stage {
+    padding: 12px;
+  }
+  .sd-howflow-headers {
+    display: none;
+  }
+  .sd-howflow-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    row-gap: 8px;
+    column-gap: 0;
+    padding: 8px;
+  }
+  .sd-howflow-cell {
+    min-height: 0;
+  }
+  .sd-howflow-client,
+  .sd-howflow-edge,
+  .sd-howflow-nodes {
+    padding: 10px 12px;
+  }
+  .sd-howflow-edge {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .sd-howflow-edge-city {
+    margin-top: 0;
+  }
+  .sd-howflow-nodes-row {
+    margin: 4px 0;
+  }
+  .sd-howflow-events {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 6px;
+  }
+  .sd-howflow-client-call,
+  .sd-howflow-edge-city,
+  .sd-howflow-nodes-tag {
+    font-size: 10.5px;
+  }
+  .sd-howflow-ledger {
+    flex-direction: column;
+  }
+  .sd-howflow-ledger-divider {
+    width: auto;
+    height: 1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-howflow-playing * {
+    animation: none !important;
+  }
+  .sd-howflow-packet {
+    display: none;
+  }
+  .sd-howflow-client-ack,
+  .sd-howflow-nodes-emit,
+  .sd-howflow-nodes-recv,
+  .sd-howflow-event,
+  .sd-howflow-events-foot {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .sd-howflow-node-chosen-a,
+  .sd-howflow-node-chosen-b,
+  .sd-howflow-node-gossip {
+    background: #ef6f2e;
+  }
+}
+

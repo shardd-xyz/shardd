@@ -43,3 +43,26 @@
 		}
 	}
 }
+
+# shardd.xyz — public marketing site, served from the landing container.
+# Cloudflare proxies the apex; this vhost is the origin. Caddy auto-issues
+# a Let's Encrypt cert via HTTP-01 once DNS resolves to this host.
+{$LANDING_ADDRESS:shardd.xyz}, www.{$LANDING_ADDRESS:shardd.xyz} {
+	encode gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# Apex+www both terminate here; redirect www → apex.
+	@www host www.{$LANDING_ADDRESS:shardd.xyz}
+	redir @www https://{$LANDING_ADDRESS:shardd.xyz}{uri} 308
+
+	reverse_proxy landing:8080
+}

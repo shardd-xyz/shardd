@@ -1,0 +1,25 @@
+# Inner Caddy — listens on :8080 only, no TLS.
+# The outer Caddy on the dashboard host handles shardd.xyz TLS and
+# reverse_proxies to landing:8080 over the docker network.
+
+:8080 {
+    encode zstd gzip
+
+    root * /srv
+    file_server
+    try_files {path} {path}.html {path}/index.html /404.html
+
+    # Hashed Vite assets — immutable
+    @hashed path /assets/*
+    header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+    # Markdown + sitemap + llms files — short cache so updates roll out fast
+    @docs path *.md /sitemap.xml /robots.txt /llms.txt /llms-full.txt
+    header @docs Cache-Control "public, max-age=300, must-revalidate"
+
+    # Default HTML cache — the outer CF proxy adds another layer
+    header /* Cache-Control "public, max-age=900, must-revalidate"
+
+    header X-Content-Type-Options "nosniff"
+    header Referrer-Policy "strict-origin-when-cross-origin"
+}

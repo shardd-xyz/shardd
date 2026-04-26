@@ -120,11 +120,20 @@ services:
       - prometheus
     restart: unless-stopped
 
+  landing:
+    # Static shardd.xyz site (vitepress SSG → caddy:2-alpine on :8080).
+    # No public ports — the outer caddy reverse_proxies to landing:8080
+    # over the docker network, so TLS terminates once at the edge.
+    image: ${SHARDD_LANDING_IMAGE}
+    container_name: ${SERVICE_NAME}-landing
+    restart: unless-stopped
+
   caddy:
     image: caddy:2-alpine
     container_name: ${SERVICE_NAME}-caddy
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS}
+      LANDING_ADDRESS: ${LANDING_ADDRESS:-shardd.xyz}
     ports:
       - "80:80"
       - "443:443"
@@ -135,6 +144,8 @@ services:
       - caddy_config:/config
     depends_on:
       dashboard:
+        condition: service_started
+      landing:
         condition: service_started
     restart: unless-stopped
 

@@ -177,15 +177,11 @@ Block on any failure; never push or deploy with red.
 Add `cargo check -p shardd-dashboard-ui` if the change touched Dioxus.
 
 ### 2. Push
-`landing/` is a git submodule pointing at `shardd-xyz/shardd-landing`.
-When it has unpushed commits, push the submodule first so the SHA is
-resolvable on the remote, then bump the pointer in the parent repo:
-```bash
-git -C landing push origin main
-git add landing && git commit -m "Bump landing submodule for ..."
-git push origin main
-```
-If only the main repo is dirty, just `git push`.
+The landing site lives in-tree at `apps/landing/` (formerly a
+`shardd-xyz/shardd-landing` submodule, now archived). It builds + ships
+with the rest of the workspace; just `git push origin main` and the
+next `./run deploy` rebundles the `shardd-landing` image alongside
+the dashboard image.
 
 ### 3. Deploy
 ```bash

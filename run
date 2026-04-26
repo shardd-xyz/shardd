@@ -94,6 +94,19 @@ cmd_build() {
 # --release`) and refresh `apps/dashboard/assets/` so the dashboard bundle
 # serves the latest WASM/CSS. We wipe the destination first to prevent stale
 # hash-suffixed files from accumulating across rebuilds.
+cmd_build_landing() {
+    # Build the shardd.xyz landing image (vitepress SSG → caddy:2-alpine).
+    # Mirrors infractl's build wiring; useful for local smoke tests
+    # without going through ./run deploy.
+    local sha
+    sha="$(git rev-parse --short=10 HEAD 2>/dev/null || echo unknown)"
+    docker build \
+        --build-arg "GIT_SHA=$sha" \
+        -t shardd-landing:latest \
+        -f apps/landing/Dockerfile \
+        apps/landing
+}
+
 cmd_build_ui() {
     local out_dir
     out_dir="$(mktemp -d -t shardd-ui-bundle-XXXXXX)"
@@ -668,6 +681,7 @@ Benchmark:
 Build:
   build              Build node and gateway Docker images
   build:ui           Bundle the Dioxus dashboard UI and refresh apps/dashboard/assets/
+  build:landing      Build apps/landing/ Docker image (vitepress SSG → caddy)
 
 Code quality:
   fmt                Format all Rust code
@@ -724,6 +738,7 @@ case "${1:-help}" in
     bench)          shift || true; cmd_bench "$@" ;;
     build)          cmd_build ;;
     build:ui)       cmd_build_ui ;;
+    build:landing)  cmd_build_landing ;;
     fmt)            cmd_fmt ;;
     lint)           shift || true; cmd_lint "$@" ;;
     test)           shift || true; cmd_test "$@" ;;
