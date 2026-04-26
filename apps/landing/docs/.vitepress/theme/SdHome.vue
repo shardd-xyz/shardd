@@ -254,10 +254,13 @@ function regionMeshLatency(e: EdgeSummary): string | null {
 // a handful of hubs that cover most traffic. Unknown timezones hide the
 // client dot so we never pretend to know where someone is.
 
+// Keyed by AWS region so the lookup survives `edge_id` renames (e.g.
+// `use1` → `use1-1` after a cluster rebuild). `edge_id` is an internal
+// label; region is the stable identity.
 const EDGE_COORDS: Record<string, { lat: number; lon: number; label: string }> = {
-  use1: { lat: 37.4, lon: -79.1, label: "Virginia" },
-  euc1: { lat: 50.1, lon: 8.6, label: "Frankfurt" },
-  ape1: { lat: 22.3, lon: 114.2, label: "Hong Kong" },
+  "us-east-1": { lat: 37.4, lon: -79.1, label: "Virginia" },
+  "eu-central-1": { lat: 50.1, lon: 8.6, label: "Frankfurt" },
+  "ap-east-1": { lat: 22.3, lon: 114.2, label: "Hong Kong" },
 };
 
 // Rough city → lat/lon table keyed by IANA timezone. Covers the majority
@@ -356,7 +359,7 @@ type MapEdge = {
 // Raw edge positions (before label nudging).
 const rawMapEdges = computed(() =>
   edges.value.map((e) => {
-    const geo = EDGE_COORDS[e.edge_id] ?? { lat: 0, lon: 0, label: e.region };
+    const geo = EDGE_COORDS[e.region] ?? { lat: 0, lon: 0, label: e.region };
     const { x, y } = project(geo.lat, geo.lon);
     return {
       edge_id: e.edge_id,
