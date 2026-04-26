@@ -10,6 +10,13 @@ TAILSCALE_AUTH_KEY="${6:?tailscale auth key required}"
 
 export DEBIAN_FRONTEND=noninteractive
 
+# On first boot the EC2 image's cloud-init holds the apt lock while it
+# runs its own apt-get update. Block until cloud-init is done so our
+# apt-get calls below don't race it. Idempotent on already-converged hosts.
+if command -v cloud-init >/dev/null 2>&1; then
+    sudo cloud-init status --wait || true
+fi
+
 sudo apt-get update -y
 compose_pkg=""
 if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
@@ -129,8 +136,11 @@ sudo mkdir -p /etc/docker
 cat <<'JSON' | sudo tee /etc/docker/daemon.json.new >/dev/null
 {
   "insecure-registries": [
+    "100.83.69.84:5000",
+    "100.74.161.14:5000",
     "100.104.178.26:5000",
-    "shardd-prod-use1-dashboard:5000"
+    "shardd-prod-use1-dashboard:5000",
+    "shardd-prod-use1-dashboard-1:5000"
   ]
 }
 JSON
