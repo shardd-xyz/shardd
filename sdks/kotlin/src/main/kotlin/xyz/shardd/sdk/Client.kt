@@ -94,6 +94,8 @@ class Client private constructor(
                 ackTimeoutMs = opts.ackTimeoutMs,
                 holdAmount = opts.holdAmount,
                 holdExpiresAtUnixMs = opts.holdExpiresAtUnixMs,
+                settleReservation = opts.settleReservation,
+                releaseReservation = opts.releaseReservation,
             )
         return request("POST", "/events", body = body)
     }
@@ -113,6 +115,77 @@ class Client private constructor(
         amount: Long,
         opts: CreateEventOptions = CreateEventOptions(),
     ): CreateEventResult = createEvent(bucket, account, kotlin.math.abs(amount), opts)
+
+    /**
+     * Reserve `amount` credit units for `ttlMs` ms. Returns a
+     * [Reservation] handle whose `reservationId` you pass to [settle]
+     * (one-shot capture) or [release] (cancel). If neither is called
+     * before `ttlMs` elapses, the hold auto-releases passively.
+     */
+    @JvmOverloads
+    fun reserve(
+        bucket: String,
+        account: String,
+        amount: Long,
+        ttlMs: Long,
+        opts: CreateEventOptions = CreateEventOptions(),
+    ): Reservation {
+        require(amount > 0) { "reserve amount must be > 0" }
+        require(ttlMs > 0) { "reserve ttlMs must be > 0" }
+        val expiresAt = System.currentTimeMillis() + ttlMs
+        val result =
+            createEvent(
+                bucket,
+                account,
+                0,
+                opts.copy(
+                    holdAmount = amount,
+                    holdExpiresAtUnixMs = expiresAt,
+                ),
+            )
+        return Reservation(
+            reservationId = result.event.eventId,
+            expiresAtUnixMs = result.event.holdExpiresAtUnixMs,
+            balance = result.balance,
+            availableBalance = result.availableBalance,
+        )
+    }
+
+    /**
+     * One-shot capture against an existing reservation. `amount` is
+     * the absolute value to charge; must be ≤ the reservation's hold.
+     * The server emits both the charge and a `hold_release`, returning
+     * any unused remainder to available balance.
+     */
+    @JvmOverloads
+    fun settle(
+        bucket: String,
+        account: String,
+        reservationId: String,
+        amount: Long,
+        opts: CreateEventOptions = CreateEventOptions(),
+    ): CreateEventResult =
+        createEvent(
+            bucket,
+            account,
+            -kotlin.math.abs(amount),
+            opts.copy(settleReservation = reservationId),
+        )
+
+    /** Cancel a reservation outright — releases the entire hold, no charge. */
+    @JvmOverloads
+    fun release(
+        bucket: String,
+        account: String,
+        reservationId: String,
+        opts: CreateEventOptions = CreateEventOptions(),
+    ): CreateEventResult =
+        createEvent(
+            bucket,
+            account,
+            0,
+            opts.copy(releaseReservation = reservationId),
+        )
 
     fun listEvents(bucket: String): EventList =
         request("GET", "/events", query = mapOf("bucket" to bucket))

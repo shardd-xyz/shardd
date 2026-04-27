@@ -8,7 +8,7 @@ use crate::edges::{fetch_directory, EdgeSelector, DEFAULT_EDGES};
 use crate::error::{from_status, GatewayErrorBody, ShardError};
 use crate::types::{
     AccountDetail, Balances, CreateEventBody, CreateEventOptions, CreateEventResult, EdgeHealth,
-    EdgeInfo, Event, EventList,
+    EdgeInfo, Event, EventList, Reservation,
 };
 
 /// Builder for a [`Client`]. Use this to override the default prod
@@ -148,6 +148,8 @@ impl Client {
             ack_timeout_ms: opts.ack_timeout_ms,
             hold_amount: opts.hold_amount,
             hold_expires_at_unix_ms: opts.hold_expires_at_unix_ms,
+            settle_reservation: opts.settle_reservation.as_deref(),
+            release_reservation: opts.release_reservation.as_deref(),
         };
         self.request_json(Method::POST, "/events", Some(&body), None::<&()>)
             .await
@@ -355,6 +357,97 @@ impl Client {
             )
             .await?;
         Ok(result.event)
+    }
+
+    /// Reserve `amount` credit units for `ttl_ms`. Returns a
+    /// [`Reservation`] handle whose `reservation_id` you pass to
+    /// [`Client::settle`] (one-shot capture) or [`Client::release`]
+    /// (cancel). If neither is called before `ttl_ms` elapses, the hold
+    /// auto-releases passively and `available_balance` recovers.
+    pub async fn reserve(
+        &self,
+        bucket: &str,
+        account: &str,
+        amount: u64,
+        ttl_ms: u64,
+        opts: CreateEventOptions,
+    ) -> Result<Reservation, ShardError> {
+        if amount == 0 {
+            return Err(ShardError::InvalidInput(
+                "reserve amount must be > 0".into(),
+            ));
+        }
+        if ttl_ms == 0 {
+            return Err(ShardError::InvalidInput(
+                "reserve ttl_ms must be > 0".into(),
+            ));
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let result = self
+            .create_event(
+                bucket,
+                account,
+                0,
+                CreateEventOptions {
+                    hold_amount: Some(amount),
+                    hold_expires_at_unix_ms: Some(now_ms + ttl_ms),
+                    ..opts
+                },
+            )
+            .await?;
+        Ok(Reservation {
+            reservation_id: result.event.event_id.clone(),
+            expires_at_unix_ms: result.event.hold_expires_at_unix_ms,
+            balance: result.balance,
+            available_balance: result.available_balance,
+        })
+    }
+
+    /// Settle (one-shot capture) `amount` against an existing reservation.
+    /// `amount` is the absolute value to charge; must be ≤ the
+    /// reservation's hold. The server emits both the charge and a
+    /// `hold_release`, returning any unused remainder to available balance.
+    pub async fn settle(
+        &self,
+        bucket: &str,
+        account: &str,
+        reservation_id: &str,
+        amount: u64,
+        opts: CreateEventOptions,
+    ) -> Result<CreateEventResult, ShardError> {
+        self.create_event(
+            bucket,
+            account,
+            -(amount as i64),
+            CreateEventOptions {
+                settle_reservation: Some(reservation_id.to_string()),
+                ..opts
+            },
+        )
+        .await
+    }
+
+    /// Cancel a reservation outright — releases the entire hold, no charge.
+    pub async fn release(
+        &self,
+        bucket: &str,
+        account: &str,
+        reservation_id: &str,
+        opts: CreateEventOptions,
+    ) -> Result<CreateEventResult, ShardError> {
+        self.create_event(
+            bucket,
+            account,
+            0,
+            CreateEventOptions {
+                release_reservation: Some(reservation_id.to_string()),
+                ..opts
+            },
+        )
+        .await
     }
 }
 

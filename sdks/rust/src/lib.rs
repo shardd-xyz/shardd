@@ -52,5 +52,5 @@ pub use client::{Client, ClientBuilder};
 pub use error::ShardError;
 pub use types::{
     AccountBalance, AccountDetail, AckInfo, Balances, CreateEventOptions, CreateEventResult,
-    EdgeHealth, EdgeInfo, Event, EventList,
+    EdgeHealth, EdgeInfo, Event, EventList, Reservation,
 };

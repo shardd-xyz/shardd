@@ -68,6 +68,7 @@ class CreateEventResult:
     available_balance: int
     deduplicated: bool
     acks: AckInfo
+    emitted_events: list[Event] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CreateEventResult":
@@ -77,7 +78,19 @@ class CreateEventResult:
             available_balance=int(d.get("available_balance", d["balance"])),
             deduplicated=bool(d.get("deduplicated", False)),
             acks=AckInfo.from_dict(d.get("acks")),
+            emitted_events=[Event.from_dict(e) for e in d.get("emitted_events", [])],
         )
+
+
+@dataclass
+class Reservation:
+    """Handle returned by ``Shardd.reserve``. Pass ``reservation_id``
+    to ``settle()`` for one-shot capture or ``release()`` to cancel."""
+
+    reservation_id: str
+    expires_at_unix_ms: int
+    balance: int
+    available_balance: int
 
 
 @dataclass

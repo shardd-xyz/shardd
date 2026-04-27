@@ -10,6 +10,7 @@ export {
   type EdgeInfo,
   type Event,
   type EventList,
+  type Reservation,
 } from "./types.js";
 export {
   DecodeError,

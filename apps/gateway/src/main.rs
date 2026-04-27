@@ -172,6 +172,17 @@ struct GatewayBucketEventRequest {
     min_acks: Option<u32>,
     #[serde(default)]
     ack_timeout_ms: Option<u64>,
+    /// Reserve fields — caller-driven hold. See `CreateEventRequest`.
+    #[serde(default)]
+    hold_amount: Option<u64>,
+    #[serde(default)]
+    hold_expires_at_unix_ms: Option<u64>,
+    /// Settle (one-shot capture) against this reservation id.
+    #[serde(default)]
+    settle_reservation: Option<String>,
+    /// Cancel this reservation outright.
+    #[serde(default)]
+    release_reservation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1194,6 +1205,10 @@ impl GatewayBucketEventRequest {
             max_overdraft: self.max_overdraft,
             min_acks: self.min_acks,
             ack_timeout_ms: self.ack_timeout_ms,
+            hold_amount: self.hold_amount,
+            hold_expires_at_unix_ms: self.hold_expires_at_unix_ms,
+            settle_reservation: self.settle_reservation,
+            release_reservation: self.release_reservation,
             // Wire payload doesn't expose this, so external clients
             // never set it. `submit_create_event` overwrites the value
             // based on the route after this conversion.
@@ -1700,6 +1715,10 @@ async fn billing_check_and_deduct(
         max_overdraft: Some(u64::MAX), // billing deductions always go through
         min_acks: None,
         ack_timeout_ms: None,
+        hold_amount: None,
+        hold_expires_at_unix_ms: None,
+        settle_reservation: None,
+        release_reservation: None,
         // Internal billing path writes into `__billing__<user_id>`.
         allow_reserved_bucket: true,
     };

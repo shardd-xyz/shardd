@@ -22,6 +22,7 @@ from .types import (
     EdgeHealth,
     EdgeInfo,
     EventList,
+    Reservation,
 )
 
 _DEFAULT_TIMEOUT = 30.0
@@ -74,6 +75,8 @@ class Shardd:
         ack_timeout_ms: Optional[int] = None,
         hold_amount: Optional[int] = None,
         hold_expires_at_unix_ms: Optional[int] = None,
+        settle_reservation: Optional[str] = None,
+        release_reservation: Optional[str] = None,
     ) -> CreateEventResult:
         """Create a ledger event. Positive amount = credit, negative = debit.
         Auto-generates ``idempotency_nonce`` if you don't supply one."""
@@ -96,6 +99,10 @@ class Shardd:
             body["hold_amount"] = hold_amount
         if hold_expires_at_unix_ms is not None:
             body["hold_expires_at_unix_ms"] = hold_expires_at_unix_ms
+        if settle_reservation is not None:
+            body["settle_reservation"] = settle_reservation
+        if release_reservation is not None:
+            body["release_reservation"] = release_reservation
         data = self._request("POST", "/events", json=body)
         return CreateEventResult.from_dict(data)
 
@@ -118,6 +125,75 @@ class Shardd:
     ) -> CreateEventResult:
         """Credit sugar — accepts a positive amount."""
         return self.create_event(bucket, account, abs(amount), **kwargs)
+
+    def reserve(
+        self,
+        bucket: str,
+        account: str,
+        amount: int,
+        ttl_ms: int,
+        **kwargs: Any,
+    ) -> "Reservation":
+        """Reserve ``amount`` for ``ttl_ms`` ms. Returns a Reservation
+        whose ``reservation_id`` is the handle for ``settle()`` and
+        ``release()``. If neither is called before the TTL elapses the
+        hold auto-releases passively."""
+        if amount <= 0:
+            raise ValueError("reserve amount must be > 0")
+        if ttl_ms <= 0:
+            raise ValueError("reserve ttl_ms must be > 0")
+        expires_at = int(time.time() * 1000) + ttl_ms
+        result = self.create_event(
+            bucket,
+            account,
+            0,
+            hold_amount=amount,
+            hold_expires_at_unix_ms=expires_at,
+            **kwargs,
+        )
+        return Reservation(
+            reservation_id=result.event.event_id,
+            expires_at_unix_ms=result.event.hold_expires_at_unix_ms,
+            balance=result.balance,
+            available_balance=result.available_balance,
+        )
+
+    def settle(
+        self,
+        bucket: str,
+        account: str,
+        reservation_id: str,
+        amount: int,
+        **kwargs: Any,
+    ) -> CreateEventResult:
+        """One-shot capture against an existing reservation. ``amount``
+        is the absolute value to charge; must be ≤ the reservation's
+        hold. The server emits both the charge and a ``hold_release``,
+        returning any unused remainder to available balance."""
+        return self.create_event(
+            bucket,
+            account,
+            -abs(amount),
+            settle_reservation=reservation_id,
+            **kwargs,
+        )
+
+    def release(
+        self,
+        bucket: str,
+        account: str,
+        reservation_id: str,
+        **kwargs: Any,
+    ) -> CreateEventResult:
+        """Cancel a reservation outright — releases the entire hold,
+        no charge."""
+        return self.create_event(
+            bucket,
+            account,
+            0,
+            release_reservation=reservation_id,
+            **kwargs,
+        )
 
     def list_events(self, bucket: str) -> EventList:
         data = self._request("GET", "/events", params={"bucket": bucket})

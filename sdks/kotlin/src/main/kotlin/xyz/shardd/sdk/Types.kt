@@ -25,6 +25,8 @@ data class CreateEventOptions(
     val ackTimeoutMs: Long? = null,
     val holdAmount: Long? = null,
     val holdExpiresAtUnixMs: Long? = null,
+    val settleReservation: String? = null,
+    val releaseReservation: String? = null,
 )
 
 data class CreateEventResult(
@@ -33,6 +35,14 @@ data class CreateEventResult(
     val availableBalance: Long,
     val deduplicated: Boolean,
     val acks: AckInfo,
+    val emittedEvents: List<Event> = emptyList(),
+)
+
+data class Reservation(
+    val reservationId: String,
+    val expiresAtUnixMs: Long,
+    val balance: Long,
+    val availableBalance: Long,
 )
 
 data class AckInfo(
@@ -102,6 +112,8 @@ internal data class CreateEventBody(
     val ackTimeoutMs: Long? = null,
     val holdAmount: Long? = null,
     val holdExpiresAtUnixMs: Long? = null,
+    val settleReservation: String? = null,
+    val releaseReservation: String? = null,
 )
 
 internal data class GatewayErrorBody(

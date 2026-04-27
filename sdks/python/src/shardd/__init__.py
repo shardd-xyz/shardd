@@ -39,6 +39,7 @@ from .types import (
     EdgeInfo,
     Event,
     EventList,
+    Reservation,
 )
 
 __all__ = [
@@ -66,6 +67,7 @@ __all__ = [
     "EdgeInfo",
     "Event",
     "EventList",
+    "Reservation",
 ]
 
 __version__ = "0.1.0"

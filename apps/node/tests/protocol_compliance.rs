@@ -497,6 +497,333 @@ async fn debit_with_hold_reduces_available_balance() {
     node.shutdown().await;
 }
 
+// ── §11.2: Client-driven reserve / settle / release ────────────────
+
+/// A pure reserve emits exactly one ReservationCreate event, leaves
+/// the settled balance untouched, and reduces available_balance by
+/// the requested hold.
+#[tokio::test]
+async fn reserve_only_creates_reservation_no_charge() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+
+    let expires = Event::now_ms() + 600_000;
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: CreateEventResponse = resp.json().await.unwrap();
+    assert_eq!(body.balance, 1000);
+    assert_eq!(body.available_balance, 500);
+    assert_eq!(body.emitted_events.len(), 1);
+    assert_eq!(body.event.r#type, EventType::ReservationCreate);
+    assert_eq!(body.event.hold_amount, 500);
+    assert_eq!(body.event.amount, 0);
+
+    node.shutdown().await;
+}
+
+/// Settle emits the charge AND a HoldRelease atomically, releasing
+/// the entire reservation regardless of how much was captured.
+#[tokio::test]
+async fn settle_emits_charge_and_release() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    let expires = Event::now_ms() + 600_000;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reservation_id = reserve_resp.event.event_id.clone();
+    assert_eq!(reserve_resp.available_balance, 500);
+
+    let settle_resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-300,
+            "settle_reservation":reservation_id,
+        }),
+    )
+    .await;
+    assert_eq!(settle_resp.status().as_u16(), 201);
+    let body: CreateEventResponse = settle_resp.json().await.unwrap();
+    assert_eq!(body.balance, 700);
+    // Hold released → available == balance.
+    assert_eq!(body.available_balance, 700);
+    assert_eq!(body.emitted_events.len(), 2);
+    assert_eq!(body.emitted_events[0].r#type, EventType::Standard);
+    assert_eq!(body.emitted_events[0].amount, -300);
+    assert_eq!(body.emitted_events[1].r#type, EventType::HoldRelease);
+    assert_eq!(
+        body.emitted_events[1].void_ref.as_deref(),
+        Some(reservation_id.as_str())
+    );
+
+    node.shutdown().await;
+}
+
+/// Settling for more than was reserved is a 400, not a partial capture.
+#[tokio::test]
+async fn settle_overspend_rejected() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    let expires = Event::now_ms() + 600_000;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-600,
+            "settle_reservation":reserve_resp.event.event_id,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 400);
+    // Balance untouched.
+    let final_state: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":0,"note":"probe"}),
+    )
+    .await
+    .json()
+    .await
+    .unwrap_or_else(|_| panic!("probe call failed"));
+    assert_eq!(final_state.balance, 1000);
+
+    node.shutdown().await;
+}
+
+/// Settling against an expired reservation is a 400 — passive expiry
+/// has already returned the funds to available_balance, so a settle
+/// would otherwise double-spend them.
+#[tokio::test]
+async fn settle_expired_reservation_rejected() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    // Hold lives just long enough to land, then we sleep past it.
+    let expires = Event::now_ms() + 500;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-100,
+            "settle_reservation":reserve_resp.event.event_id,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 400);
+
+    node.shutdown().await;
+}
+
+/// Same idempotency_nonce on a settle returns the cached primary
+/// event with no extra emissions.
+#[tokio::test]
+async fn settle_idempotent_retry_returns_cached_pair() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    let expires = Event::now_ms() + 600_000;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let first: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-300,
+            "settle_reservation":reserve_resp.event.event_id,
+            "idempotency_nonce":nonce,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let second: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-300,
+            "settle_reservation":reserve_resp.event.event_id,
+            "idempotency_nonce":nonce,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(!first.deduplicated);
+    assert!(second.deduplicated);
+    assert_eq!(first.event.event_id, second.event.event_id);
+    // Balance is the post-first-settle balance, not double-debited.
+    assert_eq!(second.balance, 700);
+
+    node.shutdown().await;
+}
+
+/// release_reservation cancels the hold without a charge — balance
+/// untouched, available_balance restored, single HoldRelease emitted.
+#[tokio::test]
+async fn release_only_no_charge() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    let expires = Event::now_ms() + 600_000;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(reserve_resp.available_balance, 500);
+
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "release_reservation":reserve_resp.event.event_id,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: CreateEventResponse = resp.json().await.unwrap();
+    assert_eq!(body.balance, 1000);
+    assert_eq!(body.available_balance, 1000);
+    assert_eq!(body.emitted_events.len(), 1);
+    assert_eq!(body.event.r#type, EventType::HoldRelease);
+    assert_eq!(
+        body.event.void_ref.as_deref(),
+        Some(reserve_resp.event.event_id.as_str())
+    );
+
+    node.shutdown().await;
+}
+
+/// A second release / settle against an already-released reservation
+/// is a 400 — the hold is already gone.
+#[tokio::test]
+async fn double_settle_rejected() {
+    let node = TestNode::start().await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+    let expires = Event::now_ms() + 600_000;
+    let reserve_resp: CreateEventResponse = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":0,
+            "hold_amount":500,"hold_expires_at_unix_ms":expires,
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reservation_id = reserve_resp.event.event_id;
+
+    let first = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-100,
+            "settle_reservation":reservation_id,
+        }),
+    )
+    .await;
+    assert_eq!(first.status().as_u16(), 201);
+
+    let second = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-100,
+            "settle_reservation":reservation_id,
+        }),
+    )
+    .await;
+    assert_eq!(second.status().as_u16(), 400);
+
+    node.shutdown().await;
+}
+
 // ── §9: Overdraft Guard ─────────────────────────────────────────────
 
 #[tokio::test]

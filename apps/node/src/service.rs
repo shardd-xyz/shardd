@@ -91,6 +91,15 @@ pub async fn delete_bucket<S: StorageBackend>(
                 "meta allocator failed; retry shortly",
             ));
         }
+        // The meta-delete path never speaks the reservation grammar, so
+        // these are unreachable in practice — surface as 500s rather
+        // than guessing at a translation.
+        Err(other) => {
+            return Err(NodeRpcError::internal(format!(
+                "unexpected create_meta_bucket_delete failure: {:?}",
+                other
+            )));
+        }
     };
 
     // Broadcast the meta event via the normal broadcaster path (§4.1).
@@ -135,20 +144,22 @@ pub async fn create_event<S: StorageBackend>(
     }
 
     let max_overdraft = req.max_overdraft.unwrap_or(0);
-    match state
-        .create_local_events(
-            req.bucket.clone(),
-            req.account.clone(),
-            req.amount,
-            req.note,
-            max_overdraft,
-            req.idempotency_nonce.clone(),
-            req.allow_reserved_bucket,
-        )
-        .await
-    {
+    let input = crate::state::LocalCreateInput {
+        bucket: req.bucket.clone(),
+        account: req.account.clone(),
+        amount: req.amount,
+        note: req.note,
+        max_overdraft,
+        idempotency_nonce: req.idempotency_nonce.clone(),
+        allow_reserved_bucket: req.allow_reserved_bucket,
+        hold_amount: req.hold_amount,
+        hold_expires_at_unix_ms: req.hold_expires_at_unix_ms,
+        settle_reservation: req.settle_reservation,
+        release_reservation: req.release_reservation,
+    };
+    match state.create_local_events(input).await {
         Ok(result) => {
-            let event = result.charge_event.clone();
+            let event = result.primary_event.clone();
             let balance = state.account_balance(&event.bucket, &event.account);
             let available = state.account_available_balance(&event.bucket, &event.account);
             let deduplicated = result.emitted_events.is_empty();
@@ -162,6 +173,7 @@ pub async fn create_event<S: StorageBackend>(
                     bucket = %event.bucket,
                     account = %event.account,
                     amount = event.amount,
+                    event_type = %event.r#type,
                     emitted_events = result.emitted_events.len(),
                     "event created"
                 );
@@ -192,6 +204,7 @@ pub async fn create_event<S: StorageBackend>(
 
             Ok(CreateEventResponse {
                 event,
+                emitted_events: result.emitted_events,
                 balance,
                 available_balance: available,
                 deduplicated,
@@ -216,6 +229,24 @@ pub async fn create_event<S: StorageBackend>(
             Err(NodeRpcError::invalid_input(format!(
                 "bucket '{}' was permanently deleted and cannot be written to",
                 name
+            )))
+        }
+        Err(crate::state::CreateLocalEventError::InvalidRequest(message)) => {
+            Err(NodeRpcError::invalid_input(message))
+        }
+        Err(crate::state::CreateLocalEventError::ReservationNotFound(id)) => Err(
+            NodeRpcError::invalid_input(format!("reservation '{}' not found", id)),
+        ),
+        Err(crate::state::CreateLocalEventError::ReservationExpired(id)) => Err(
+            NodeRpcError::invalid_input(format!("reservation '{}' has expired", id)),
+        ),
+        Err(crate::state::CreateLocalEventError::ReservationAlreadyReleased(id)) => Err(
+            NodeRpcError::invalid_input(format!("reservation '{}' has already been released", id)),
+        ),
+        Err(crate::state::CreateLocalEventError::ReservationOverspend(reserved, attempted)) => {
+            Err(NodeRpcError::invalid_input(format!(
+                "settle attempted {} against a reservation of {}",
+                attempted, reserved
             )))
         }
     }

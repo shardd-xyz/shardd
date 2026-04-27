@@ -331,7 +331,11 @@ Request:
   "idempotency_nonce": "string | null",
   "max_overdraft": 0,
   "min_acks": 0,
-  "ack_timeout_ms": 500
+  "ack_timeout_ms": 500,
+  "hold_amount": 0,
+  "hold_expires_at_unix_ms": 0,
+  "settle_reservation": "string | null",
+  "release_reservation": "string | null"
 }
 ```
 
@@ -341,11 +345,28 @@ Request:
 | `max_overdraft` | 0 | How far below zero the balance can go. 0 = no overdraft. |
 | `min_acks` | 0 | Minimum peer acknowledgments before responding. 0 = fire-and-forget. |
 | `ack_timeout_ms` | 500 | Maximum time to wait for acks (ms). |
+| `hold_amount` | null | Caller-driven reservation amount (§11.2). When supplied with `hold_expires_at_unix_ms` and `amount == 0`, the request mints a pure `reservation_create` event. With `amount < 0`, overrides the implicit `hold_multiplier × \|amount\|` sizing. |
+| `hold_expires_at_unix_ms` | null | Unix-ms expiry of the reservation. Required whenever `hold_amount` is set. Must be in the future. |
+| `settle_reservation` | null | One-shot capture against an existing reservation id. Pair with `amount < 0` no greater than the reservation's hold. The server emits a Standard charge AND a `hold_release` referencing the reservation, atomically. |
+| `release_reservation` | null | Cancel an existing reservation outright. Pair with `amount == 0`. Emits only a `hold_release`. |
+
+Mode dispatch (server-side):
+
+| Combination | Behavior |
+|---|---|
+| `amount == 0`, `hold_amount > 0`, `hold_expires_at_unix_ms` future | **Reserve** — emit one `reservation_create`. |
+| `amount < 0`, `settle_reservation = R` | **Settle** — emit `Standard(amount)` + `hold_release(void_ref=R)`. |
+| `amount == 0`, `release_reservation = R` | **Release** — emit one `hold_release(void_ref=R)`. |
+| `amount < 0`, `hold_amount > 0`, `hold_expires_at_unix_ms` future | **Debit with explicit hold** — overrides node's multiplier. |
+| `amount != 0`, no reservation fields | **Charge / credit** — debits get the node's implicit hold (§11.4); credits do not. |
+
+Reserve / settle / release are mutually exclusive. Combining `settle_reservation` or `release_reservation` with explicit `hold_amount` is rejected as `400 invalid_input`.
 
 Response (201 — created):
 ```json
 {
   "event": { ... },
+  "emitted_events": [ { ... }, { ... } ],
   "balance": 0,
   "available_balance": 0,
   "deduplicated": false,
@@ -353,16 +374,27 @@ Response (201 — created):
 }
 ```
 
+`event` is the primary outcome — the charge for a charge/settle, the `reservation_create` for a reserve, the `hold_release` for a release. `emitted_events` lists every event minted by the request (1 for a pure reserve / release / credit, 2 for a debit with implicit hold or for a settle, empty on idempotent retry).
+
 Response (200 — deduplicated):
 ```json
 {
   "event": { ... },
+  "emitted_events": [],
   "balance": 0,
   "available_balance": 0,
   "deduplicated": true,
   "acks": null
 }
 ```
+
+Response (400 — invalid reservation request):
+```json
+{
+  "error": "settle attempted 600 against a reservation of 500"
+}
+```
+Returned when settle/release references a nonexistent / expired / already-released reservation, when settle attempts to capture more than was reserved, or when the request mode fields are mutually inconsistent.
 
 Response (422 — overdraft rejected):
 ```json
@@ -608,13 +640,24 @@ This is a soft distributed lock — it does not require consensus and does not g
 
 ### 11.2 Hold Lifecycle
 
-1. **Creation**: when a node creates a debit event, it sets `hold_amount` and `hold_expires_at_unix_ms` based on node configuration.
+1. **Creation**: a hold is created in one of two ways:
+   - **Implicit (debit-driven)**: when a node creates a debit event with no caller-supplied hold fields, it sets `hold_amount` and `hold_expires_at_unix_ms` from node configuration (§11.4).
+   - **Explicit (caller-driven)**: a client may supply `hold_amount` and `hold_expires_at_unix_ms` on `POST /events` (§7.1) to mint a pure `reservation_create` event (`amount == 0`) or to override the implicit sizing on a debit. Pure reservations are the pre-auth half of the reserve→settle pattern.
 
 2. **Propagation**: the hold fields travel with the event via broadcast and sync. All nodes that receive the event include the hold in their `available_balance` computation.
 
-3. **Expiry**: holds expire passively. No event is emitted on expiry. Each node independently stops including the hold in `available_balance` once `now_ms >= hold_expires_at_unix_ms`. Since all nodes use the same expiry timestamp from the event, they converge (modulo clock skew).
+3. **Expiry**: holds expire passively. No event is emitted on expiry. Each node independently stops including the hold in `available_balance` once `now_ms >= hold_expires_at_unix_ms`. Since all nodes use the same expiry timestamp from the event, they converge (modulo clock skew). This is the natural fallback for an abandoned reservation — no settle, no explicit release, the funds simply return to `available_balance` after the TTL.
 
-4. **Early release for corrections only**: a hold MAY be released early by a system-generated `hold_release` event when the underlying debit is corrected (e.g., duplicate resolution). Clients cannot release holds manually.
+4. **Early release**: a hold MAY be released early by a `hold_release` event referencing the hold's `event_id` via `void_ref`. Releases are emitted in three cases:
+   - **Settle (§11.2.1)**: a client `POST /events` with `settle_reservation = R` atomically emits a Standard charge for the captured amount AND a `hold_release` for `R`. The unused remainder returns to `available_balance` immediately rather than waiting for TTL.
+   - **Cancel (§11.2.1)**: a client `POST /events` with `release_reservation = R` emits a `hold_release` for `R` with no charge.
+   - **Correction (§10.5)**: when duplicate-resolution voids a debit that carried a hold, the system emits a corresponding `hold_release` so the loser's hold doesn't outlive its (now-voided) debit.
+
+#### 11.2.1 One-shot capture
+
+The reserve→settle pattern is *one-shot*: each `reservation_create` accepts at most one settle or one release. The first `hold_release` referencing it terminates the hold; subsequent settle/release attempts return `400`. This keeps the released-hold marker boolean (matching §11.3) and avoids per-reservation captured-balance bookkeeping. Callers who need partial captures should issue smaller, independent reservations.
+
+A settle's charge amount must satisfy `|amount| ≤ reservation.hold_amount`. There is no minimum — capturing 0 against a reservation is a no-op debit but still terminates the hold (equivalent to a release).
 
 ### 11.3 Available Balance Computation
 

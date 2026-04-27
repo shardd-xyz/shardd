@@ -40,8 +40,154 @@ pub struct ReservationState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalCreateResult {
-    pub charge_event: Event,
+    /// The "answer" event for this request: the charge for a charge/
+    /// settle, the `ReservationCreate` for a reserve, the `HoldRelease`
+    /// for a release.
+    pub primary_event: Event,
+    /// Every event minted during this call. Empty on idempotent retry.
     pub emitted_events: Vec<Event>,
+}
+
+/// Input bundle for `create_local_events`. Carries enough fields to
+/// distinguish charge / reserve / settle / release modes; see
+/// `LocalCreateMode::from_input` for the dispatch logic.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalCreateInput {
+    pub bucket: String,
+    pub account: String,
+    pub amount: i64,
+    pub note: Option<String>,
+    pub max_overdraft: u64,
+    pub idempotency_nonce: String,
+    pub allow_reserved_bucket: bool,
+    pub hold_amount: Option<u64>,
+    pub hold_expires_at_unix_ms: Option<u64>,
+    pub settle_reservation: Option<String>,
+    pub release_reservation: Option<String>,
+}
+
+impl LocalCreateInput {
+    /// Build the input shape used by every legacy charge/credit caller —
+    /// no reservation fields, no caller-supplied hold. The
+    /// `allow_reserved_bucket` flag is the only knob beyond the basics.
+    pub(crate) fn legacy(
+        bucket: String,
+        account: String,
+        amount: i64,
+        note: Option<String>,
+        max_overdraft: u64,
+        idempotency_nonce: String,
+        allow_reserved_bucket: bool,
+    ) -> Self {
+        Self {
+            bucket,
+            account,
+            amount,
+            note,
+            max_overdraft,
+            idempotency_nonce,
+            allow_reserved_bucket,
+            hold_amount: None,
+            hold_expires_at_unix_ms: None,
+            settle_reservation: None,
+            release_reservation: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LocalCreateMode {
+    /// Standard credit or debit. `hold_override` is `Some((amount, expires))`
+    /// when the caller explicitly sized the hold; otherwise the node falls
+    /// back to its `hold_multiplier × |amount|` default for debits.
+    Charge { hold_override: Option<(u64, u64)> },
+    /// Pure reservation — `amount == 0`, caller-supplied hold fields.
+    Reserve,
+    /// One-shot capture against an existing reservation.
+    Settle { reservation_id: String },
+    /// Cancel an existing reservation; no charge.
+    Release { reservation_id: String },
+}
+
+impl LocalCreateMode {
+    fn from_input(input: &LocalCreateInput) -> Result<Self, CreateLocalEventError> {
+        let has_settle = input.settle_reservation.is_some();
+        let has_release = input.release_reservation.is_some();
+        if has_settle && has_release {
+            return Err(CreateLocalEventError::InvalidRequest(
+                "settle_reservation and release_reservation are mutually exclusive".into(),
+            ));
+        }
+
+        // Hold fields must come as a pair when supplied explicitly.
+        let explicit_hold = match (input.hold_amount, input.hold_expires_at_unix_ms) {
+            (Some(amt), Some(expires)) => Some((amt, expires)),
+            (None, None) => None,
+            _ => {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "hold_amount and hold_expires_at_unix_ms must be set together".into(),
+                ));
+            }
+        };
+
+        if let Some(reservation_id) = input.settle_reservation.clone() {
+            if input.amount >= 0 {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "settle_reservation requires a debit (amount < 0)".into(),
+                ));
+            }
+            if explicit_hold.is_some() {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "settle_reservation cannot be combined with explicit hold fields".into(),
+                ));
+            }
+            return Ok(LocalCreateMode::Settle { reservation_id });
+        }
+
+        if let Some(reservation_id) = input.release_reservation.clone() {
+            if input.amount != 0 {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "release_reservation requires amount == 0".into(),
+                ));
+            }
+            if explicit_hold.is_some() {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "release_reservation cannot be combined with explicit hold fields".into(),
+                ));
+            }
+            return Ok(LocalCreateMode::Release { reservation_id });
+        }
+
+        if let Some((hold_amount, hold_expires_at_unix_ms)) = explicit_hold {
+            if hold_amount == 0 {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "hold_amount must be > 0 when supplied".into(),
+                ));
+            }
+            if hold_expires_at_unix_ms <= Event::now_ms() {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "hold_expires_at_unix_ms must be in the future".into(),
+                ));
+            }
+            // Pure reserve: amount == 0. Otherwise it's a debit with a
+            // caller-sized hold.
+            if input.amount == 0 {
+                return Ok(LocalCreateMode::Reserve);
+            }
+            if input.amount > 0 {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "credits cannot carry a hold".into(),
+                ));
+            }
+            return Ok(LocalCreateMode::Charge {
+                hold_override: Some((hold_amount, hold_expires_at_unix_ms)),
+            });
+        }
+
+        Ok(LocalCreateMode::Charge {
+            hold_override: None,
+        })
+    }
 }
 
 /// Failure modes for `create_local_event(s)`.
@@ -56,6 +202,22 @@ pub enum CreateLocalEventError {
     /// The target bucket has been hard-deleted via a `BucketDelete`
     /// meta event (§3.5). Deleted names are reserved forever.
     BucketDeleted(String),
+    /// Caller passed a combination of fields that doesn't map to any
+    /// supported mode (e.g. `settle_reservation` with `amount >= 0`,
+    /// or `hold_amount` without `hold_expires_at_unix_ms`).
+    InvalidRequest(String),
+    /// Settle/release referenced a reservation this node has no record
+    /// of. Either the id is wrong or the originating event hasn't
+    /// replicated yet — the caller should retry.
+    ReservationNotFound(String),
+    /// The reservation has already expired; settle/release is no-op
+    /// territory because passive expiry has already kicked in.
+    ReservationExpired(String),
+    /// A prior settle or release has already terminated this reservation.
+    ReservationAlreadyReleased(String),
+    /// Settle attempted to capture more than was reserved.
+    /// Tuple: (reservation_amount, attempted_amount).
+    ReservationOverspend(u64, u64),
 }
 
 impl AccountState {
@@ -416,7 +578,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         max_overdraft: u64,
         idempotency_nonce: String,
     ) -> Result<Event, CreateLocalEventError> {
-        self.create_local_events(
+        self.create_local_events(LocalCreateInput::legacy(
             bucket,
             account,
             amount,
@@ -424,55 +586,54 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             max_overdraft,
             idempotency_nonce,
             false,
-        )
+        ))
         .await
-        .map(|result| result.charge_event)
+        .map(|result| result.primary_event)
     }
 
     pub(crate) async fn create_local_events(
         &self,
-        bucket: String,
-        account: String,
-        amount: i64,
-        note: Option<String>,
-        max_overdraft: u64,
-        idempotency_nonce: String,
-        allow_reserved_bucket: bool,
+        input: LocalCreateInput,
     ) -> Result<LocalCreateResult, CreateLocalEventError> {
         // §3.5: reject writes to reserved and tombstoned buckets before
         // any side effects. The `allow_reserved_bucket` opt-in is set
         // by the gateway's internal billing route; client RPC paths
         // never pass true.
-        if !allow_reserved_bucket && is_reserved_bucket_name(&bucket) {
-            return Err(CreateLocalEventError::BucketReserved(bucket));
+        if !input.allow_reserved_bucket && is_reserved_bucket_name(&input.bucket) {
+            return Err(CreateLocalEventError::BucketReserved(input.bucket));
         }
-        if self.deleted_buckets.contains_key(&bucket) {
-            return Err(CreateLocalEventError::BucketDeleted(bucket));
+        if self.deleted_buckets.contains_key(&input.bucket) {
+            return Err(CreateLocalEventError::BucketDeleted(input.bucket));
         }
 
-        let key = (bucket.clone(), account.clone());
+        // Validate request shape and pick a mode (§11.2). Settle and
+        // release are mutually exclusive with explicit `hold_amount`,
+        // and each has a fixed sign requirement on `amount`.
+        let mode = LocalCreateMode::from_input(&input)?;
+
+        let key = (input.bucket.clone(), input.account.clone());
         let acct = self
             .accounts
-            .entry(key.clone())
+            .entry(key)
             .or_insert_with(|| Arc::new(Mutex::new(AccountState::new())))
             .clone();
 
         // Hold the per-account lock for the entire atomic section (§3.1)
         let mut state = acct.lock().await;
 
-        // Step 1: Idempotency check (§10.3)
-        // Check in-memory cache first, then DB fallback.
+        // Step 1: Idempotency check (§10.3) — same primary nonce for
+        // every mode; a retry with the same nonce returns the cached
+        // primary event regardless of which branch produced it.
         let idem_key = (
-            idempotency_nonce.clone(),
-            bucket.clone(),
-            account.clone(),
-            amount,
+            input.idempotency_nonce.clone(),
+            input.bucket.clone(),
+            input.account.clone(),
+            input.amount,
         );
 
-        // In-memory cache hit
         if let Some(existing) = self.idempotency_cache.get(&idem_key) {
             return Ok(LocalCreateResult {
-                charge_event: existing.value().clone(),
+                primary_event: existing.value().clone(),
                 emitted_events: Vec::new(),
             });
         }
@@ -480,7 +641,12 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         // DB fallback (§10.3 step 2): cache may have been evicted after restart
         if let Ok(matches) = self
             .storage
-            .find_by_idempotency_key(&idempotency_nonce, &bucket, &account, amount)
+            .find_by_idempotency_key(
+                &input.idempotency_nonce,
+                &input.bucket,
+                &input.account,
+                input.amount,
+            )
             .await
             && !matches.is_empty()
         {
@@ -495,38 +661,80 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                 .unwrap()
                 .clone();
 
-            // Re-populate cache for future fast lookups
             self.idempotency_cache.insert(idem_key, winner.clone());
             return Ok(LocalCreateResult {
-                charge_event: winner,
+                primary_event: winner,
                 emitted_events: Vec::new(),
             });
         }
 
-        // Step 2: Overdraft guard (§9.1) — debits only
         let now_ms = Event::now_ms();
-        let requested_hold = if amount < 0 && self.hold_multiplier > 0 {
-            amount.unsigned_abs() * self.hold_multiplier
-        } else {
-            0
+
+        match mode {
+            LocalCreateMode::Charge { hold_override } => {
+                self.emit_charge_locked(&mut state, input, hold_override, now_ms)
+                    .await
+            }
+            LocalCreateMode::Reserve => self.emit_reserve_locked(&mut state, input, now_ms).await,
+            LocalCreateMode::Settle { reservation_id } => {
+                self.emit_settle_locked(&mut state, input, &reservation_id, now_ms)
+                    .await
+            }
+            LocalCreateMode::Release { reservation_id } => {
+                self.emit_release_locked(&mut state, input, &reservation_id, now_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Charge/credit branch — the legacy flow plus an optional caller-
+    /// supplied hold override. When `hold_override` is `None`, the
+    /// implicit `hold_multiplier × |amount|` sizing kicks in on debits.
+    async fn emit_charge_locked(
+        &self,
+        state: &mut AccountState,
+        input: LocalCreateInput,
+        hold_override: Option<(u64, u64)>,
+        now_ms: u64,
+    ) -> Result<LocalCreateResult, CreateLocalEventError> {
+        let (hold_amount, hold_expires_at_unix_ms) = match hold_override {
+            Some((amt, expires)) => {
+                // Explicit caller hold — honour as-is. Don't subtract
+                // existing per-origin holds; the caller knows what they
+                // want reserved for this debit specifically.
+                (amt, expires)
+            }
+            None => {
+                let requested_hold = if input.amount < 0 && self.hold_multiplier > 0 {
+                    input.amount.unsigned_abs() * self.hold_multiplier
+                } else {
+                    0
+                };
+                let renewal_window_ms = if self.hold_duration_ms == 0 {
+                    0
+                } else {
+                    self.hold_duration_ms.div_ceil(10)
+                };
+                let current_hold = state.active_hold_total_for_origin(
+                    self.node_id.as_ref(),
+                    now_ms,
+                    renewal_window_ms,
+                );
+                let hold_amount = requested_hold.saturating_sub(current_hold);
+                let hold_expires_at_unix_ms = if hold_amount > 0 {
+                    now_ms + self.hold_duration_ms
+                } else {
+                    0
+                };
+                (hold_amount, hold_expires_at_unix_ms)
+            }
         };
-        let renewal_window_ms = if self.hold_duration_ms == 0 {
-            0
-        } else {
-            self.hold_duration_ms.div_ceil(10)
-        };
-        let current_hold =
-            state.active_hold_total_for_origin(self.node_id.as_ref(), now_ms, renewal_window_ms);
-        let hold_amount = requested_hold.saturating_sub(current_hold);
-        let hold_expires_at_unix_ms = if hold_amount > 0 {
-            now_ms + self.hold_duration_ms
-        } else {
-            0
-        };
-        if amount < 0 {
+
+        // Overdraft guard (§9.1) — debits only.
+        if input.amount < 0 {
             let avail = state.available_balance(now_ms);
-            let projected = avail + amount - (hold_amount as i64);
-            let floor = -(max_overdraft as i64);
+            let projected = avail + input.amount - (hold_amount as i64);
+            let floor = -(input.max_overdraft as i64);
             if projected < floor {
                 return Err(CreateLocalEventError::InsufficientFunds(
                     state.balance,
@@ -538,20 +746,15 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
 
         let mut emitted_events = Vec::new();
 
-        // Step 3: Optionally mint a reservation event before the charge event.
+        // Optional reservation event before the charge.
         if hold_amount > 0 {
-            let (reservation_epoch, reservation_seq) =
-                match self.bucket_allocators.allocate(&bucket).await {
-                    Ok(pair) => pair,
-                    Err(error) => {
-                        warn!(error = %error, bucket = %bucket, "bucket allocator failed");
-                        return Err(CreateLocalEventError::InsufficientFunds(
-                            state.balance,
-                            state.available_balance(now_ms),
-                            state.balance,
-                        ));
-                    }
-                };
+            let (reservation_epoch, reservation_seq) = self
+                .allocate_or_fail(
+                    &input.bucket,
+                    state.balance,
+                    state.available_balance(now_ms),
+                )
+                .await?;
             let reservation_event = Event {
                 event_id: Event::generate_id(),
                 origin_node_id: self.node_id.to_string(),
@@ -559,11 +762,11 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                 origin_seq: reservation_seq,
                 created_at_unix_ms: now_ms,
                 r#type: EventType::ReservationCreate,
-                bucket: bucket.clone(),
-                account: account.clone(),
+                bucket: input.bucket.clone(),
+                account: input.account.clone(),
                 amount: 0,
                 note: None,
-                idempotency_nonce: format!("reserve:{idempotency_nonce}"),
+                idempotency_nonce: format!("reserve:{}", input.idempotency_nonce),
                 void_ref: None,
                 hold_amount,
                 hold_expires_at_unix_ms,
@@ -573,8 +776,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             self.idempotency_cache.insert(
                 (
                     reservation_event.idempotency_nonce.clone(),
-                    bucket.clone(),
-                    account.clone(),
+                    input.bucket.clone(),
+                    input.account.clone(),
                     0,
                 ),
                 reservation_event.clone(),
@@ -582,18 +785,14 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             emitted_events.push(reservation_event);
         }
 
-        // Step 4: Generate the actual charge/credit event.
-        let (charge_epoch, charge_seq) = match self.bucket_allocators.allocate(&bucket).await {
-            Ok(pair) => pair,
-            Err(error) => {
-                warn!(error = %error, bucket = %bucket, "bucket allocator failed");
-                return Err(CreateLocalEventError::InsufficientFunds(
-                    state.balance,
-                    state.available_balance(now_ms),
-                    state.balance,
-                ));
-            }
-        };
+        // The charge/credit Standard event itself.
+        let (charge_epoch, charge_seq) = self
+            .allocate_or_fail(
+                &input.bucket,
+                state.balance,
+                state.available_balance(now_ms),
+            )
+            .await?;
         let charge_event = Event {
             event_id: Event::generate_id(),
             origin_node_id: self.node_id.to_string(),
@@ -601,43 +800,304 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             origin_seq: charge_seq,
             created_at_unix_ms: now_ms,
             r#type: EventType::Standard,
-            bucket: bucket.clone(),
-            account: account.clone(),
-            amount,
-            note,
-            idempotency_nonce: idempotency_nonce.clone(),
+            bucket: input.bucket.clone(),
+            account: input.account.clone(),
+            amount: input.amount,
+            note: input.note,
+            idempotency_nonce: input.idempotency_nonce.clone(),
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
         };
-
-        // Step 5: Update in-memory caches (still holding lock)
-        state.balance += amount;
+        state.balance += input.amount;
         state.event_count += 1;
-
-        // Install charge event in idempotency cache
         self.idempotency_cache.insert(
             (
-                idempotency_nonce.clone(),
-                bucket.clone(),
-                account.clone(),
-                amount,
+                input.idempotency_nonce.clone(),
+                input.bucket.clone(),
+                input.account.clone(),
+                input.amount,
             ),
             charge_event.clone(),
         );
 
-        // Release per-account lock
-        drop(state);
-
         emitted_events.push(charge_event.clone());
-        for event in &emitted_events {
-            self.record_new_local_event(event).await;
-        }
+        self.flush_local_events(&emitted_events).await;
 
         Ok(LocalCreateResult {
-            charge_event,
+            primary_event: charge_event,
             emitted_events,
         })
+    }
+
+    /// Pure reserve — caller supplied `hold_amount` + `hold_expires_at_unix_ms`,
+    /// `amount == 0`. Mints exactly one `ReservationCreate` event.
+    async fn emit_reserve_locked(
+        &self,
+        state: &mut AccountState,
+        input: LocalCreateInput,
+        now_ms: u64,
+    ) -> Result<LocalCreateResult, CreateLocalEventError> {
+        let hold_amount = input.hold_amount.unwrap_or(0);
+        let hold_expires_at_unix_ms = input.hold_expires_at_unix_ms.unwrap_or(0);
+
+        // Pre-validated by `LocalCreateMode::from_input`, but cheap to assert.
+        debug_assert!(hold_amount > 0);
+        debug_assert!(hold_expires_at_unix_ms > now_ms);
+
+        // The reservation reduces available_balance, so the same overdraft
+        // guard applies: a reserve we couldn't pay out is a reserve we
+        // shouldn't accept.
+        let avail = state.available_balance(now_ms);
+        let projected = avail - (hold_amount as i64);
+        let floor = -(input.max_overdraft as i64);
+        if projected < floor {
+            return Err(CreateLocalEventError::InsufficientFunds(
+                state.balance,
+                avail,
+                projected,
+            ));
+        }
+
+        let (epoch, seq) = self
+            .allocate_or_fail(&input.bucket, state.balance, avail)
+            .await?;
+        let event = Event {
+            event_id: Event::generate_id(),
+            origin_node_id: self.node_id.to_string(),
+            origin_epoch: epoch,
+            origin_seq: seq,
+            created_at_unix_ms: now_ms,
+            r#type: EventType::ReservationCreate,
+            bucket: input.bucket.clone(),
+            account: input.account.clone(),
+            amount: 0,
+            note: input.note,
+            idempotency_nonce: input.idempotency_nonce.clone(),
+            void_ref: None,
+            hold_amount,
+            hold_expires_at_unix_ms,
+        };
+        state.event_count += 1;
+        state.track_reservation(&event);
+        self.idempotency_cache.insert(
+            (input.idempotency_nonce, input.bucket, input.account, 0),
+            event.clone(),
+        );
+
+        let emitted = vec![event.clone()];
+        self.flush_local_events(&emitted).await;
+
+        Ok(LocalCreateResult {
+            primary_event: event,
+            emitted_events: emitted,
+        })
+    }
+
+    /// One-shot capture: emit the Standard charge AND a `HoldRelease`
+    /// referencing the reservation, atomically. Releases the full hold
+    /// regardless of how much was captured — any unused remainder is
+    /// implicitly returned to `available_balance`.
+    async fn emit_settle_locked(
+        &self,
+        state: &mut AccountState,
+        input: LocalCreateInput,
+        reservation_id: &str,
+        now_ms: u64,
+    ) -> Result<LocalCreateResult, CreateLocalEventError> {
+        let reservation = state
+            .reservations
+            .get(reservation_id)
+            .cloned()
+            .ok_or_else(|| {
+                CreateLocalEventError::ReservationNotFound(reservation_id.to_string())
+            })?;
+        if state.released.contains(reservation_id) {
+            return Err(CreateLocalEventError::ReservationAlreadyReleased(
+                reservation_id.to_string(),
+            ));
+        }
+        if reservation.expires_at_unix_ms <= now_ms {
+            return Err(CreateLocalEventError::ReservationExpired(
+                reservation_id.to_string(),
+            ));
+        }
+        let attempted = input.amount.unsigned_abs();
+        if attempted > reservation.amount {
+            return Err(CreateLocalEventError::ReservationOverspend(
+                reservation.amount,
+                attempted,
+            ));
+        }
+
+        // Allocate both events up-front so neither lands without the other.
+        let (charge_epoch, charge_seq) = self
+            .allocate_or_fail(
+                &input.bucket,
+                state.balance,
+                state.available_balance(now_ms),
+            )
+            .await?;
+        let (release_epoch, release_seq) = self
+            .allocate_or_fail(
+                &input.bucket,
+                state.balance,
+                state.available_balance(now_ms),
+            )
+            .await?;
+
+        let charge_event = Event {
+            event_id: Event::generate_id(),
+            origin_node_id: self.node_id.to_string(),
+            origin_epoch: charge_epoch,
+            origin_seq: charge_seq,
+            created_at_unix_ms: now_ms,
+            r#type: EventType::Standard,
+            bucket: input.bucket.clone(),
+            account: input.account.clone(),
+            amount: input.amount,
+            note: input.note,
+            idempotency_nonce: input.idempotency_nonce.clone(),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+        let release_event = Event {
+            event_id: Event::generate_id(),
+            origin_node_id: self.node_id.to_string(),
+            origin_epoch: release_epoch,
+            origin_seq: release_seq,
+            created_at_unix_ms: now_ms,
+            r#type: EventType::HoldRelease,
+            bucket: input.bucket.clone(),
+            account: input.account.clone(),
+            amount: 0,
+            note: None,
+            idempotency_nonce: format!("release:{}", input.idempotency_nonce),
+            void_ref: Some(reservation_id.to_string()),
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+
+        state.balance += input.amount;
+        state.event_count += 2;
+        state.apply_release(reservation_id);
+
+        self.idempotency_cache.insert(
+            (
+                input.idempotency_nonce.clone(),
+                input.bucket.clone(),
+                input.account.clone(),
+                input.amount,
+            ),
+            charge_event.clone(),
+        );
+        self.idempotency_cache.insert(
+            (
+                release_event.idempotency_nonce.clone(),
+                input.bucket.clone(),
+                input.account.clone(),
+                0,
+            ),
+            release_event.clone(),
+        );
+
+        let emitted = vec![charge_event.clone(), release_event];
+        self.flush_local_events(&emitted).await;
+
+        Ok(LocalCreateResult {
+            primary_event: charge_event,
+            emitted_events: emitted,
+        })
+    }
+
+    /// Cancel a reservation outright. Emits only a `HoldRelease` —
+    /// no balance change, no charge event.
+    async fn emit_release_locked(
+        &self,
+        state: &mut AccountState,
+        input: LocalCreateInput,
+        reservation_id: &str,
+        now_ms: u64,
+    ) -> Result<LocalCreateResult, CreateLocalEventError> {
+        let reservation = state
+            .reservations
+            .get(reservation_id)
+            .cloned()
+            .ok_or_else(|| {
+                CreateLocalEventError::ReservationNotFound(reservation_id.to_string())
+            })?;
+        if state.released.contains(reservation_id) {
+            return Err(CreateLocalEventError::ReservationAlreadyReleased(
+                reservation_id.to_string(),
+            ));
+        }
+        if reservation.expires_at_unix_ms <= now_ms {
+            return Err(CreateLocalEventError::ReservationExpired(
+                reservation_id.to_string(),
+            ));
+        }
+
+        let (epoch, seq) = self
+            .allocate_or_fail(
+                &input.bucket,
+                state.balance,
+                state.available_balance(now_ms),
+            )
+            .await?;
+        let release_event = Event {
+            event_id: Event::generate_id(),
+            origin_node_id: self.node_id.to_string(),
+            origin_epoch: epoch,
+            origin_seq: seq,
+            created_at_unix_ms: now_ms,
+            r#type: EventType::HoldRelease,
+            bucket: input.bucket.clone(),
+            account: input.account.clone(),
+            amount: 0,
+            note: input.note,
+            idempotency_nonce: input.idempotency_nonce.clone(),
+            void_ref: Some(reservation_id.to_string()),
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+        };
+        state.event_count += 1;
+        state.apply_release(reservation_id);
+        self.idempotency_cache.insert(
+            (input.idempotency_nonce, input.bucket, input.account, 0),
+            release_event.clone(),
+        );
+
+        let emitted = vec![release_event.clone()];
+        self.flush_local_events(&emitted).await;
+
+        Ok(LocalCreateResult {
+            primary_event: release_event,
+            emitted_events: emitted,
+        })
+    }
+
+    async fn allocate_or_fail(
+        &self,
+        bucket: &str,
+        balance: i64,
+        available: i64,
+    ) -> Result<(u32, u64), CreateLocalEventError> {
+        match self.bucket_allocators.allocate(bucket).await {
+            Ok(pair) => Ok(pair),
+            Err(error) => {
+                warn!(error = %error, bucket = %bucket, "bucket allocator failed");
+                Err(CreateLocalEventError::InsufficientFunds(
+                    balance, available, balance,
+                ))
+            }
+        }
+    }
+
+    async fn flush_local_events(&self, events: &[Event]) {
+        for event in events {
+            self.record_new_local_event(event).await;
+        }
     }
 
     // ── Event replication (§3.2) ─────────────────────────────────────
@@ -1839,7 +2299,7 @@ mod tests {
             .unwrap();
 
         let first = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -100,
@@ -1847,11 +2307,11 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
         let second = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -100,
@@ -1859,7 +2319,7 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
 
@@ -1895,7 +2355,7 @@ mod tests {
             .unwrap();
 
         let first = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -100,
@@ -1903,11 +2363,11 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
         let second = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -150,
@@ -1915,7 +2375,7 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
 
@@ -1969,7 +2429,7 @@ mod tests {
         assert!(state.insert_event(&remote).await);
 
         let local = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -100,
@@ -1977,13 +2437,13 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(local.emitted_events.len(), 2);
         assert_eq!(local.emitted_events[0].r#type, EventType::ReservationCreate);
         assert_eq!(local.emitted_events[0].hold_amount, 500);
-        assert_eq!(local.charge_event.hold_amount, 0);
+        assert_eq!(local.primary_event.hold_amount, 0);
 
         let balances = state.get_all_balances();
         let account = balances
@@ -2047,7 +2507,7 @@ mod tests {
         assert!(state.insert_event(&local_expiring).await);
 
         let renewed = state
-            .create_local_events(
+            .create_local_events(LocalCreateInput::legacy(
                 "b".into(),
                 "a".into(),
                 -100,
@@ -2055,7 +2515,7 @@ mod tests {
                 0,
                 uuid::Uuid::new_v4().to_string(),
                 false,
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(renewed.emitted_events.len(), 2);
@@ -2064,7 +2524,7 @@ mod tests {
             EventType::ReservationCreate
         );
         assert_eq!(renewed.emitted_events[0].hold_amount, 500);
-        assert_eq!(renewed.charge_event.hold_amount, 0);
+        assert_eq!(renewed.primary_event.hold_amount, 0);
 
         let balances = state.get_all_balances();
         let account = balances

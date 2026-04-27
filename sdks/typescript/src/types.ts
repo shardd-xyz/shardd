@@ -32,14 +32,44 @@ export interface CreateEventOptions {
   minAcks?: number;
   /** Cap the ack wait at this many milliseconds. */
   ackTimeoutMs?: number;
-  /** Reserve this many credit units beyond the debit (hold / pre-auth). */
+  /**
+   * Caller-driven reservation amount. Set together with
+   * `holdExpiresAtUnixMs` to override the node's default
+   * `hold_multiplier × |amount|` sizing on a debit, or — with
+   * `amount == 0` — to mint a pure pre-auth reservation. See
+   * {@link Client.reserve} for the high-level flow.
+   */
   holdAmount?: number;
   /** Unix-ms timestamp at which the hold auto-releases. */
   holdExpiresAtUnixMs?: number;
+  /**
+   * One-shot capture against an existing reservation. Pair with a
+   * negative `amount` ≤ the reservation's hold amount; the server
+   * emits both the charge and a `hold_release` atomically, returning
+   * any unused remainder to available balance.
+   */
+  settleReservation?: string;
+  /** Cancel a reservation outright. Pair with `amount: 0`. */
+  releaseReservation?: string;
+}
+
+/** A reservation handle returned by {@link Client.reserve}. */
+export interface Reservation {
+  reservationId: string;
+  expiresAtUnixMs: number;
+  balance: number;
+  availableBalance: number;
 }
 
 export interface CreateEventResult {
   event: Event;
+  /**
+   * Every event minted by this request. For a settle, this contains
+   * both the Standard charge and the matching `hold_release`. For a
+   * debit that triggered the implicit hold, contains the
+   * `reservation_create` and the charge. Empty on an idempotent retry.
+   */
+  emitted_events?: Event[];
   balance: number;
   available_balance: number;
   /** `true` on an idempotent retry — the write was a no-op. */
@@ -111,4 +141,6 @@ export interface CreateEventBody {
   ack_timeout_ms?: number;
   hold_amount?: number;
   hold_expires_at_unix_ms?: number;
+  settle_reservation?: string;
+  release_reservation?: string;
 }

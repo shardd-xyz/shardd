@@ -22,6 +22,7 @@ import {
   EdgeHealth,
   EdgeInfo,
   EventList,
+  Reservation,
 } from "./types.js";
 
 export interface ClientOptions {
@@ -82,6 +83,12 @@ export class Client {
     if (opts.holdExpiresAtUnixMs !== undefined) {
       body.hold_expires_at_unix_ms = opts.holdExpiresAtUnixMs;
     }
+    if (opts.settleReservation !== undefined) {
+      body.settle_reservation = opts.settleReservation;
+    }
+    if (opts.releaseReservation !== undefined) {
+      body.release_reservation = opts.releaseReservation;
+    }
     return this.request<CreateEventResult>("POST", "/events", {
       body: JSON.stringify(body),
     });
@@ -105,6 +112,72 @@ export class Client {
     opts: CreateEventOptions = {},
   ): Promise<CreateEventResult> {
     return this.createEvent(bucket, account, Math.abs(amount), opts);
+  }
+
+  /**
+   * Reserve `amount` units against `account` for `ttlMs` milliseconds.
+   * Returns a {@link Reservation} handle whose `reservationId` you pass
+   * to {@link Client.settle} (one-shot capture) or {@link Client.release}
+   * (cancel). If neither is called before `ttlMs` elapses, the hold
+   * auto-releases and `availableBalance` recovers.
+   */
+  async reserve(
+    bucket: string,
+    account: string,
+    amount: number,
+    ttlMs: number,
+    opts: CreateEventOptions = {},
+  ): Promise<Reservation> {
+    if (amount <= 0) {
+      throw new Error("reserve amount must be > 0");
+    }
+    if (ttlMs <= 0) {
+      throw new Error("reserve ttlMs must be > 0");
+    }
+    const expiresAtUnixMs = Date.now() + ttlMs;
+    const result = await this.createEvent(bucket, account, 0, {
+      ...opts,
+      holdAmount: amount,
+      holdExpiresAtUnixMs: expiresAtUnixMs,
+    });
+    return {
+      reservationId: result.event.event_id,
+      expiresAtUnixMs: result.event.hold_expires_at_unix_ms,
+      balance: result.balance,
+      availableBalance: result.available_balance,
+    };
+  }
+
+  /**
+   * Settle (one-shot capture) `amount` against an existing reservation.
+   * `amount` is the absolute value to charge; must be ≤ the reservation's
+   * hold. The server emits both the charge and a `hold_release`,
+   * returning any unused remainder to available balance.
+   */
+  async settle(
+    bucket: string,
+    account: string,
+    reservationId: string,
+    amount: number,
+    opts: CreateEventOptions = {},
+  ): Promise<CreateEventResult> {
+    return this.createEvent(bucket, account, -Math.abs(amount), {
+      ...opts,
+      settleReservation: reservationId,
+    });
+  }
+
+  /** Cancel a reservation outright — releases the entire hold, no charge. */
+  async release(
+    bucket: string,
+    account: string,
+    reservationId: string,
+    opts: CreateEventOptions = {},
+  ): Promise<CreateEventResult> {
+    return this.createEvent(bucket, account, 0, {
+      ...opts,
+      releaseReservation: reservationId,
+    });
   }
 
   async listEvents(bucket: string): Promise<EventList> {

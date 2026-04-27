@@ -51,11 +51,30 @@ pub struct CreateEventOptions {
     pub min_acks: Option<u32>,
     /// Cap the ack wait at this many milliseconds.
     pub ack_timeout_ms: Option<u64>,
-    /// Reserve this many additional credit units beyond the debit. Used
-    /// for pre-auth / hold flows.
+    /// Caller-driven reservation amount. Set with `hold_expires_at_unix_ms`
+    /// to override the node's default hold sizing on a debit, or with
+    /// `amount == 0` to mint a pure pre-auth reservation. See
+    /// [`Client::reserve`](crate::Client::reserve) for the high-level flow.
     pub hold_amount: Option<u64>,
     /// Unix-ms timestamp at which the hold auto-releases.
     pub hold_expires_at_unix_ms: Option<u64>,
+    /// One-shot capture against an existing reservation id. The server
+    /// emits both the charge and a `hold_release` atomically.
+    pub settle_reservation: Option<String>,
+    /// Cancel a reservation outright. Pair with `amount: 0`.
+    pub release_reservation: Option<String>,
+}
+
+/// Handle returned by [`Client::reserve`](crate::Client::reserve). Pass
+/// `reservation_id` to [`Client::settle`](crate::Client::settle) for
+/// one-shot capture or [`Client::release`](crate::Client::release) to
+/// cancel.
+#[derive(Debug, Clone)]
+pub struct Reservation {
+    pub reservation_id: String,
+    pub expires_at_unix_ms: u64,
+    pub balance: i64,
+    pub available_balance: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,14 +95,24 @@ pub(crate) struct CreateEventBody<'a> {
     pub hold_amount: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_expires_at_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settle_reservation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_reservation: Option<&'a str>,
 }
 
 /// Result of a successful [`Client::create_event`](crate::Client::create_event).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateEventResult {
-    /// The event as it lives on the ledger. On an idempotent retry this is
-    /// the original event, not a new one.
+    /// The primary event for the request — the charge for a charge or
+    /// settle, the `reservation_create` for a reserve, the `hold_release`
+    /// for a release. On an idempotent retry this is the original event.
     pub event: Event,
+    /// Every event minted by the request. For a settle this contains
+    /// both the charge and the matching `hold_release`. Empty on an
+    /// idempotent retry.
+    #[serde(default)]
+    pub emitted_events: Vec<Event>,
     /// Post-event balance on `(bucket, account)`.
     pub balance: i64,
     /// Balance minus any active hold total on `(bucket, account)`.

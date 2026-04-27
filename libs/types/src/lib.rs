@@ -379,6 +379,27 @@ pub struct CreateEventRequest {
     pub min_acks: Option<u32>,
     #[serde(default)]
     pub ack_timeout_ms: Option<u64>,
+    /// Caller-driven reservation amount (§11.2). When set together with
+    /// `hold_expires_at_unix_ms` and `amount == 0`, the request is a
+    /// pure reservation: the node mints a `ReservationCreate` event with
+    /// these exact fields and emits no charge. When `amount < 0`, this
+    /// overrides the node's implicit `hold_multiplier × |amount|` hold
+    /// sizing.
+    #[serde(default)]
+    pub hold_amount: Option<u64>,
+    /// Caller-driven reservation expiry. Required when `hold_amount` is set.
+    #[serde(default)]
+    pub hold_expires_at_unix_ms: Option<u64>,
+    /// Settle (one-shot capture) against an existing reservation. The
+    /// `amount` debits the account and a `HoldRelease` is emitted in
+    /// the same atomic section, releasing whatever remains of the
+    /// reservation. `|amount|` must be ≤ the reservation's hold_amount.
+    #[serde(default)]
+    pub settle_reservation: Option<String>,
+    /// Cancel an existing reservation outright (no charge). `amount`
+    /// must be 0. Emits only a `HoldRelease` referencing the given id.
+    #[serde(default)]
+    pub release_reservation: Option<String>,
     /// Internal-only: set by the gateway's `/internal/billing/events`
     /// route to write into reserved buckets (e.g. `__billing__<user>`).
     /// Public RPC clients can never set this — the gateway's external
@@ -389,7 +410,18 @@ pub struct CreateEventRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEventResponse {
+    /// The primary event for this request: the charge (Standard) for a
+    /// debit/credit/settle, the `ReservationCreate` for a pure reserve,
+    /// or the `HoldRelease` for a release. For backward compatibility,
+    /// reads of just `event` keep working.
     pub event: Event,
+    /// Every event minted by this request. For a settle, this contains
+    /// both the charge and the matching `HoldRelease`. For a debit that
+    /// triggered the legacy implicit hold, this contains the
+    /// `ReservationCreate` and the charge. For everything else this is
+    /// just `[event]`. Empty on an idempotent retry that hit the cache.
+    #[serde(default)]
+    pub emitted_events: Vec<Event>,
     pub balance: i64,
     pub available_balance: i64,
     pub deduplicated: bool,

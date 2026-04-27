@@ -23,6 +23,7 @@ from .types import (
     EdgeHealth,
     EdgeInfo,
     EventList,
+    Reservation,
 )
 
 _DEFAULT_TIMEOUT = 30.0
@@ -75,6 +76,8 @@ class AsyncShardd:
         ack_timeout_ms: Optional[int] = None,
         hold_amount: Optional[int] = None,
         hold_expires_at_unix_ms: Optional[int] = None,
+        settle_reservation: Optional[str] = None,
+        release_reservation: Optional[str] = None,
     ) -> CreateEventResult:
         nonce = idempotency_nonce or str(uuid.uuid4())
         body: dict[str, Any] = {
@@ -95,6 +98,10 @@ class AsyncShardd:
             body["hold_amount"] = hold_amount
         if hold_expires_at_unix_ms is not None:
             body["hold_expires_at_unix_ms"] = hold_expires_at_unix_ms
+        if settle_reservation is not None:
+            body["settle_reservation"] = settle_reservation
+        if release_reservation is not None:
+            body["release_reservation"] = release_reservation
         data = await self._request("POST", "/events", json=body)
         return CreateEventResult.from_dict(data)
 
@@ -115,6 +122,65 @@ class AsyncShardd:
         **kwargs: Any,
     ) -> CreateEventResult:
         return await self.create_event(bucket, account, abs(amount), **kwargs)
+
+    async def reserve(
+        self,
+        bucket: str,
+        account: str,
+        amount: int,
+        ttl_ms: int,
+        **kwargs: Any,
+    ) -> "Reservation":
+        if amount <= 0:
+            raise ValueError("reserve amount must be > 0")
+        if ttl_ms <= 0:
+            raise ValueError("reserve ttl_ms must be > 0")
+        expires_at = int(time.time() * 1000) + ttl_ms
+        result = await self.create_event(
+            bucket,
+            account,
+            0,
+            hold_amount=amount,
+            hold_expires_at_unix_ms=expires_at,
+            **kwargs,
+        )
+        return Reservation(
+            reservation_id=result.event.event_id,
+            expires_at_unix_ms=result.event.hold_expires_at_unix_ms,
+            balance=result.balance,
+            available_balance=result.available_balance,
+        )
+
+    async def settle(
+        self,
+        bucket: str,
+        account: str,
+        reservation_id: str,
+        amount: int,
+        **kwargs: Any,
+    ) -> CreateEventResult:
+        return await self.create_event(
+            bucket,
+            account,
+            -abs(amount),
+            settle_reservation=reservation_id,
+            **kwargs,
+        )
+
+    async def release(
+        self,
+        bucket: str,
+        account: str,
+        reservation_id: str,
+        **kwargs: Any,
+    ) -> CreateEventResult:
+        return await self.create_event(
+            bucket,
+            account,
+            0,
+            release_reservation=reservation_id,
+            **kwargs,
+        )
 
     async def list_events(self, bucket: str) -> EventList:
         data = await self._request("GET", "/events", params={"bucket": bucket})
