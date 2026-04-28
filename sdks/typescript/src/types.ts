@@ -51,6 +51,14 @@ export interface CreateEventOptions {
   settleReservation?: string;
   /** Cancel a reservation outright. Pair with `amount: 0`. */
   releaseReservation?: string;
+  /**
+   * When `true` on a debit, bypass the node's implicit
+   * `hold_multiplier × |amount|` reservation. Use for one-shot writes
+   * (zero-out balances, refund offsets, retention deletes) where the
+   * soft distributed lock blocks legitimate full-balance debits. No
+   * effect on credits, settle/release, or pure reserves.
+   */
+  skipHold?: boolean;
 }
 
 /** A reservation handle returned by {@link Client.reserve}. */
@@ -143,4 +151,5 @@ export interface CreateEventBody {
   hold_expires_at_unix_ms?: number;
   settle_reservation?: string;
   release_reservation?: string;
+  skip_hold?: boolean;
 }

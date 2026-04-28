@@ -64,6 +64,7 @@ pub(crate) struct LocalCreateInput {
     pub hold_expires_at_unix_ms: Option<u64>,
     pub settle_reservation: Option<String>,
     pub release_reservation: Option<String>,
+    pub skip_hold: bool,
 }
 
 impl LocalCreateInput {
@@ -91,6 +92,7 @@ impl LocalCreateInput {
             hold_expires_at_unix_ms: None,
             settle_reservation: None,
             release_reservation: None,
+            skip_hold: false,
         }
     }
 }
@@ -129,6 +131,22 @@ impl LocalCreateMode {
                 ));
             }
         };
+
+        // skip_hold is mutually exclusive with everything that already
+        // dictates hold-shape. It's a "the implicit multiplier doesn't
+        // apply here" knob, nothing more.
+        if input.skip_hold {
+            if has_settle || has_release {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "skip_hold cannot be combined with settle/release".into(),
+                ));
+            }
+            if explicit_hold.is_some() {
+                return Err(CreateLocalEventError::InvalidRequest(
+                    "skip_hold cannot be combined with explicit hold fields".into(),
+                ));
+            }
+        }
 
         if let Some(reservation_id) = input.settle_reservation.clone() {
             if input.amount >= 0 {
@@ -181,6 +199,16 @@ impl LocalCreateMode {
             }
             return Ok(LocalCreateMode::Charge {
                 hold_override: Some((hold_amount, hold_expires_at_unix_ms)),
+            });
+        }
+
+        // skip_hold + plain debit/credit: charge mode with
+        // hold_override = Some((0,0)) so emit_charge_locked treats it
+        // as "no hold". For credits skip_hold is a no-op (credits
+        // never carry implicit holds).
+        if input.skip_hold {
+            return Ok(LocalCreateMode::Charge {
+                hold_override: Some((0, 0)),
             });
         }
 

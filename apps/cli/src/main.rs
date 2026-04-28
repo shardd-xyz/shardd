@@ -166,6 +166,7 @@ async fn run_mesh(command: Commands, client: MeshClient) -> Result<()> {
                         hold_expires_at_unix_ms: None,
                         settle_reservation: None,
                         release_reservation: None,
+                        skip_hold: None,
                         allow_reserved_bucket: false,
                     },
                 ))

@@ -96,6 +96,7 @@ class Client private constructor(
                 holdExpiresAtUnixMs = opts.holdExpiresAtUnixMs,
                 settleReservation = opts.settleReservation,
                 releaseReservation = opts.releaseReservation,
+                skipHold = opts.skipHold,
             )
         return request("POST", "/events", body = body)
     }

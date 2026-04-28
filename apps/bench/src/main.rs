@@ -143,6 +143,7 @@ fn create_event_request(bucket: &str, account: &str, amount: i64) -> CreateEvent
         hold_expires_at_unix_ms: None,
         settle_reservation: None,
         release_reservation: None,
+        skip_hold: None,
         allow_reserved_bucket: false,
     }
 }

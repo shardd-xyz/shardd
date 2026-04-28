@@ -150,6 +150,7 @@ impl Client {
             hold_expires_at_unix_ms: opts.hold_expires_at_unix_ms,
             settle_reservation: opts.settle_reservation.as_deref(),
             release_reservation: opts.release_reservation.as_deref(),
+            skip_hold: opts.skip_hold,
         };
         self.request_json(Method::POST, "/events", Some(&body), None::<&()>)
             .await

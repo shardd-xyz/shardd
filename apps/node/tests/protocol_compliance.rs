@@ -824,6 +824,53 @@ async fn double_settle_rejected() {
     node.shutdown().await;
 }
 
+/// skip_hold lets a debit bypass the implicit `hold_multiplier × |amount|`
+/// reservation. The classic blocked case: nuking a user's full balance.
+/// Without skip_hold the multiplier-driven hold pushes projected
+/// available_balance below the overdraft floor; with skip_hold the
+/// debit lands cleanly.
+#[tokio::test]
+async fn skip_hold_lets_full_balance_debit_through() {
+    let node = TestNode::start_with(|mut c| {
+        c.hold_multiplier = 5;
+        c.hold_duration_ms = 600_000;
+        c
+    })
+    .await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+
+    // Without skip_hold: -1000 with multiplier=5 reserves 5000 → reject.
+    let blocked = create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":-1000}),
+    )
+    .await;
+    assert_eq!(blocked.status().as_u16(), 422);
+
+    // With skip_hold: same debit lands. Single Standard event, no
+    // ReservationCreate.
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-1000,"skip_hold":true,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: CreateEventResponse = resp.json().await.unwrap();
+    assert_eq!(body.balance, 0);
+    assert_eq!(body.available_balance, 0);
+    assert_eq!(body.emitted_events.len(), 1);
+    assert_eq!(body.emitted_events[0].r#type, EventType::Standard);
+
+    node.shutdown().await;
+}
+
 // ── §9: Overdraft Guard ─────────────────────────────────────────────
 
 #[tokio::test]

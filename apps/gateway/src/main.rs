@@ -183,6 +183,9 @@ struct GatewayBucketEventRequest {
     /// Cancel this reservation outright.
     #[serde(default)]
     release_reservation: Option<String>,
+    /// Bypass the implicit hold on debits. See `CreateEventRequest`.
+    #[serde(default)]
+    skip_hold: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1209,6 +1212,7 @@ impl GatewayBucketEventRequest {
             hold_expires_at_unix_ms: self.hold_expires_at_unix_ms,
             settle_reservation: self.settle_reservation,
             release_reservation: self.release_reservation,
+            skip_hold: self.skip_hold,
             // Wire payload doesn't expose this, so external clients
             // never set it. `submit_create_event` overwrites the value
             // based on the route after this conversion.
@@ -1719,6 +1723,7 @@ async fn billing_check_and_deduct(
         hold_expires_at_unix_ms: None,
         settle_reservation: None,
         release_reservation: None,
+        skip_hold: None,
         // Internal billing path writes into `__billing__<user_id>`.
         allow_reserved_bucket: true,
     };

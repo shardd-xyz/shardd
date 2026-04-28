@@ -400,6 +400,15 @@ pub struct CreateEventRequest {
     /// must be 0. Emits only a `HoldRelease` referencing the given id.
     #[serde(default)]
     pub release_reservation: Option<String>,
+    /// When `true` on a debit, bypass the node's implicit
+    /// `hold_multiplier × |amount|` reservation. Use this for one-shot
+    /// administrative writes (zero-out balances, refund offsets,
+    /// retention deletes) where the soft distributed lock provided by
+    /// holds adds no value and actively blocks legitimate full-balance
+    /// debits. Has no effect on credits, settle/release, or pure
+    /// reserves. Mutually exclusive with explicit `hold_amount`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_hold: Option<bool>,
     /// Internal-only: set by the gateway's `/internal/billing/events`
     /// route to write into reserved buckets (e.g. `__billing__<user>`).
     /// Public RPC clients can never set this — the gateway's external

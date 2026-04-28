@@ -77,6 +77,7 @@ class Shardd:
         hold_expires_at_unix_ms: Optional[int] = None,
         settle_reservation: Optional[str] = None,
         release_reservation: Optional[str] = None,
+        skip_hold: Optional[bool] = None,
     ) -> CreateEventResult:
         """Create a ledger event. Positive amount = credit, negative = debit.
         Auto-generates ``idempotency_nonce`` if you don't supply one."""
@@ -103,6 +104,8 @@ class Shardd:
             body["settle_reservation"] = settle_reservation
         if release_reservation is not None:
             body["release_reservation"] = release_reservation
+        if skip_hold is not None:
+            body["skip_hold"] = skip_hold
         data = self._request("POST", "/events", json=body)
         return CreateEventResult.from_dict(data)
 

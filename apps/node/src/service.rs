@@ -156,6 +156,7 @@ pub async fn create_event<S: StorageBackend>(
         hold_expires_at_unix_ms: req.hold_expires_at_unix_ms,
         settle_reservation: req.settle_reservation,
         release_reservation: req.release_reservation,
+        skip_hold: req.skip_hold.unwrap_or(false),
     };
     match state.create_local_events(input).await {
         Ok(result) => {

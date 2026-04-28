@@ -27,6 +27,7 @@ data class CreateEventOptions(
     val holdExpiresAtUnixMs: Long? = null,
     val settleReservation: String? = null,
     val releaseReservation: String? = null,
+    val skipHold: Boolean? = null,
 )
 
 data class CreateEventResult(
@@ -114,6 +115,7 @@ internal data class CreateEventBody(
     val holdExpiresAtUnixMs: Long? = null,
     val settleReservation: String? = null,
     val releaseReservation: String? = null,
+    val skipHold: Boolean? = null,
 )
 
 internal data class GatewayErrorBody(

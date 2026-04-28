@@ -89,6 +89,9 @@ export class Client {
     if (opts.releaseReservation !== undefined) {
       body.release_reservation = opts.releaseReservation;
     }
+    if (opts.skipHold !== undefined) {
+      body.skip_hold = opts.skipHold;
+    }
     return this.request<CreateEventResult>("POST", "/events", {
       body: JSON.stringify(body),
     });

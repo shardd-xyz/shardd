@@ -63,6 +63,13 @@ pub struct CreateEventOptions {
     pub settle_reservation: Option<String>,
     /// Cancel a reservation outright. Pair with `amount: 0`.
     pub release_reservation: Option<String>,
+    /// When `true` on a debit, bypass the node's implicit
+    /// `hold_multiplier × |amount|` reservation. Use for one-shot
+    /// administrative writes (zero-out balances, refund offsets,
+    /// retention deletes) where the soft distributed lock blocks
+    /// legitimate full-balance debits. No effect on credits,
+    /// settle/release, or pure reserves.
+    pub skip_hold: Option<bool>,
 }
 
 /// Handle returned by [`Client::reserve`](crate::Client::reserve). Pass
@@ -99,6 +106,8 @@ pub(crate) struct CreateEventBody<'a> {
     pub settle_reservation: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_reservation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_hold: Option<bool>,
 }
 
 /// Result of a successful [`Client::create_event`](crate::Client::create_event).
