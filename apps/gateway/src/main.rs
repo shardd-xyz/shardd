@@ -1129,6 +1129,15 @@ async fn submit_create_event(
     }
     .into_create_request(internal_bucket);
     create_request.allow_reserved_bucket = allow_reserved_bucket;
+    // Internal billing-bucket writes are server-driven (admin grants,
+    // Stripe webhooks, plan assignments) and serialized at the source.
+    // The implicit hold provides no protection here and actively blocks
+    // legitimate full-balance debits — force skip_hold on whenever
+    // we're talking to a reserved bucket. External writes still go
+    // through the public path with whatever skip_hold the caller chose.
+    if allow_reserved_bucket {
+        create_request.skip_hold = Some(true);
+    }
 
     match state
         .mesh
@@ -1723,7 +1732,9 @@ async fn billing_check_and_deduct(
         hold_expires_at_unix_ms: None,
         settle_reservation: None,
         release_reservation: None,
-        skip_hold: None,
+        // Internal billing write — see `submit_create_event` for why
+        // billing-bucket writes opt out of the implicit hold.
+        skip_hold: Some(true),
         // Internal billing path writes into `__billing__<user_id>`.
         allow_reserved_bucket: true,
     };
