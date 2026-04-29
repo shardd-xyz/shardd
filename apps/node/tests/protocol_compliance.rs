@@ -1026,7 +1026,14 @@ async fn libp2p_discovery_finds_mesh_nodes_and_orders_by_rtt() {
     .await;
 
     let client = start_mesh_client(std::slice::from_ref(&node1.libp2p_addr), 2).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait on the actual condition — at least one ping round-trip per
+    // peer — instead of a fixed sleep. The libp2p Ping behaviour fires
+    // every 1s, but on a busy CI host the first reply for a peer can
+    // land outside any short fixed window.
+    client
+        .wait_for_min_pinged(2, Duration::from_secs(15))
+        .await
+        .expect("both nodes should be pinged");
     let nodes = client.all_nodes();
     let addrs: Vec<String> = nodes
         .iter()

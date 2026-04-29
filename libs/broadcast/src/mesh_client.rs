@@ -215,6 +215,29 @@ impl MeshClient {
         }
     }
 
+    /// Wait until at least `min_pinged` discovered nodes have a measured
+    /// `ping_rtt`. Use this when callers care about RTT ordering or
+    /// health-based selection — `wait_for_min_candidates` only guarantees
+    /// Identify has landed, not that libp2p's Ping behaviour has
+    /// completed a round-trip.
+    pub async fn wait_for_min_pinged(&self, min_pinged: usize, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let pinged = self
+                .all_nodes()
+                .iter()
+                .filter(|n| n.ping_rtt.is_some())
+                .count();
+            if pinged >= min_pinged {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("timed out waiting for {min_pinged} pinged nodes (have {pinged})");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     pub fn all_nodes(&self) -> Vec<MeshNode> {
         let now_ms = Event::now_ms();
         let mut nodes = self.collect_nodes(now_ms, true);
