@@ -738,7 +738,10 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             }
             None => {
                 let raw_hold = if input.amount < 0 && self.hold_multiplier > 0 {
-                    input.amount.unsigned_abs().saturating_mul(self.hold_multiplier)
+                    input
+                        .amount
+                        .unsigned_abs()
+                        .saturating_mul(self.hold_multiplier)
                 } else {
                     0
                 };
@@ -2238,7 +2241,10 @@ mod tests {
                 uuid::Uuid::new_v4().to_string(),
             )
             .await;
-        assert!(result.is_ok(), "full-balance debit was rejected: {result:?}");
+        assert!(
+            result.is_ok(),
+            "full-balance debit was rejected: {result:?}"
+        );
         assert_eq!(state.account_balance("b", "a"), 0);
     }
 
@@ -2274,7 +2280,10 @@ mod tests {
             .await;
         match truly_short {
             Err(CreateLocalEventError::InsufficientFunds(_, _, _, hold_blocking)) => {
-                assert!(!hold_blocking, "bare insufficient-funds must not blame the hold");
+                assert!(
+                    !hold_blocking,
+                    "bare insufficient-funds must not blame the hold"
+                );
             }
             other => panic!("expected InsufficientFunds, got {other:?}"),
         }

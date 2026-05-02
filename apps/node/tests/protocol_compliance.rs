@@ -916,7 +916,10 @@ async fn insufficient_funds_distinguishes_hold_blocked_from_truly_short() {
     // `hold_blocking` and `hint` are omitted when the rejection is
     // genuine (skip_serializing_if). Either omitted or explicitly
     // false/null is acceptable.
-    assert_ne!(body.get("hold_blocking").and_then(|v| v.as_bool()), Some(true));
+    assert_ne!(
+        body.get("hold_blocking").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     assert!(body.get("hint").and_then(|v| v.as_str()).is_none());
 
     // Explicit caller-supplied hold that's too large to fit, even
@@ -935,7 +938,10 @@ async fn insufficient_funds_distinguishes_hold_blocked_from_truly_short() {
     assert_eq!(body["error"].as_str().unwrap(), "insufficient_funds");
     assert_eq!(body["hold_blocking"].as_bool(), Some(true));
     let hint = body["hint"].as_str().expect("hint string present");
-    assert!(hint.contains("skip_hold"), "hint should mention skip_hold: {hint}");
+    assert!(
+        hint.contains("skip_hold"),
+        "hint should mention skip_hold: {hint}"
+    );
 
     node.shutdown().await;
 }
