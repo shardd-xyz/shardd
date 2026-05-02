@@ -444,6 +444,18 @@ pub struct InsufficientFundsError {
     pub available_balance: i64,
     pub projected_available_balance: i64,
     pub limit: i64,
+    /// True when the rejection is caused entirely by the implicit
+    /// `hold_multiplier × |amount|` reservation — i.e. the math
+    /// `available_balance + amount` would have cleared `limit`, but
+    /// adding the implicit hold pushed projected_available below it.
+    /// Callers seeing this can retry with `skip_hold: true` (or a
+    /// smaller explicit `hold_amount`).
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub hold_blocking: bool,
+    /// One-line operator-facing hint, populated when `hold_blocking`.
+    /// Intentionally short; full context lives in protocol.md §11.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 // §7.1 GET /health

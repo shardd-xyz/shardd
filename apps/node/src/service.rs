@@ -216,12 +216,24 @@ pub async fn create_event<S: StorageBackend>(
             balance,
             available,
             projected,
+            hold_blocking,
         )) => Err(NodeRpcError::insufficient_funds(InsufficientFundsError {
             error: "insufficient_funds".into(),
             balance,
             available_balance: available,
             projected_available_balance: projected,
             limit: -(max_overdraft as i64),
+            hold_blocking,
+            hint: if hold_blocking {
+                Some(
+                    "implicit hold (hold_multiplier × |amount|) pushed projected_available below the floor; \
+                     the bare debit math would clear. Retry with `skip_hold: true` for one-shot administrative \
+                     writes, or pass an explicit smaller `hold_amount`. See protocol.md §11.4."
+                        .into(),
+                )
+            } else {
+                None
+            },
         })),
         Err(crate::state::CreateLocalEventError::BucketReserved(name)) => Err(
             NodeRpcError::invalid_input(format!("bucket name '{}' is reserved", name)),

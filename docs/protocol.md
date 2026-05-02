@@ -687,12 +687,30 @@ The hold amount and duration are configured per-node:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `hold_multiplier` | 10 | Hold amount = `abs(charge_amount) × hold_multiplier`. |
+| `hold_multiplier` | 10 | Requested hold amount = `abs(charge_amount) × hold_multiplier` (subject to the auto-shrink rule below). |
 | `hold_duration_ms` | 600000 | Hold duration (default 10 minutes). |
 
-Example: a charge of `-100` (1 USD in cents) with `hold_multiplier=10` creates a hold of `1000` (10 USD) expiring 10 minutes from now.
+Example: a charge of `-100` (1 USD in cents) with `hold_multiplier=10` requests a hold of `1000` (10 USD) expiring 10 minutes from now.
+
+**Auto-shrink for full-balance debits.** The implicit hold is a *coordination hint* for sibling nodes — it has nothing to lock against if the account doesn't have spare balance. To avoid spuriously rejecting near- or full-balance debits, the node shrinks the requested hold to the headroom that remains after the bare debit:
+
+```
+implicit_hold = min(
+    abs(amount) × hold_multiplier,
+    max(0, available_balance + amount - floor),
+)
+```
+
+Where `floor = -max_overdraft`. With this rule, a debit that satisfies `available_balance + amount ≥ floor` is never rejected purely because of its own implicit hold; partial-balance debits still get a meaningful soft-lock proportional to whatever balance is left over.
+
+Callers who want a *specific* hold size (or none at all) keep the existing knobs:
+
+- `hold_amount: <u64>` — exact size, bypasses auto-shrink.
+- `skip_hold: true` — explicit zero hold; appropriate for one-shot administrative writes (refunds, retention deletes, balance zero-outs).
 
 Nodes MAY use different hold configurations based on regional traffic patterns.
+
+When the overdraft guard *does* reject a debit because the (possibly auto-shrunk) hold still doesn't fit, the response includes `hold_blocking: true` and a `hint` string when the bare debit math (`available_balance + amount`) would have cleared the floor. Clients SHOULD surface the hint or retry with `skip_hold: true` for genuinely administrative writes.
 
 ### 11.5 Interaction with Holds from Other Nodes
 
@@ -708,7 +726,7 @@ This is the mechanism by which one node's spending activity reduces available ba
 
 - **Clock skew**: nodes with skewed clocks will disagree on whether a hold is active. Nodes MUST run NTP or an equivalent clock synchronization protocol with a maximum drift of 1 second. Hold durations (default 10 minutes) are chosen to be much larger than this bound, making skew negligible relative to hold lifetime. Implementations SHOULD monitor clock drift and alert if it exceeds the bound.
 - **Stale holds**: if broadcast is delayed, a node may not know about a peer's holds until catch-up sync. During this window, the node's `available_balance` is higher than it should be.
-- **Over-reservation**: aggressive hold multipliers reduce available balance significantly, potentially rejecting legitimate debits. Tune `hold_multiplier` and `hold_duration_ms` based on actual traffic patterns.
+- **Over-reservation on partial-balance debits**: aggressive hold multipliers can still reduce *partial* available balance significantly, slowing concurrent debits across nodes. Tune `hold_multiplier` and `hold_duration_ms` based on actual traffic patterns. (Full-balance debits are no longer affected — see §11.4 auto-shrink.)
 - **Correction latency**: after a duplicate debit is detected, `available_balance` remains too low until the matching `hold_release` propagates.
 
 ## 12. Broadcast and Membership Layer

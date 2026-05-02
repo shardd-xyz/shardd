@@ -824,13 +824,15 @@ async fn double_settle_rejected() {
     node.shutdown().await;
 }
 
-/// skip_hold lets a debit bypass the implicit `hold_multiplier × |amount|`
-/// reservation. The classic blocked case: nuking a user's full balance.
-/// Without skip_hold the multiplier-driven hold pushes projected
-/// available_balance below the overdraft floor; with skip_hold the
-/// debit lands cleanly.
+/// Full-balance debits land without ceremony post-Fix-B: the
+/// implicit `hold_multiplier × |amount|` reservation auto-shrinks
+/// to whatever headroom remains after the bare debit clears the
+/// overdraft floor (zero in the full-balance case), so the debit
+/// is admitted. `skip_hold: true` is still useful as an explicit
+/// opt-out — it suppresses the implicit reservation event entirely
+/// rather than minting one for zero credits.
 #[tokio::test]
-async fn skip_hold_lets_full_balance_debit_through() {
+async fn full_balance_debit_lands_with_auto_shrunk_hold() {
     let node = TestNode::start_with(|mut c| {
         c.hold_multiplier = 5;
         c.hold_duration_ms = 600_000;
@@ -844,16 +846,25 @@ async fn skip_hold_lets_full_balance_debit_through() {
     )
     .await;
 
-    // Without skip_hold: -1000 with multiplier=5 reserves 5000 → reject.
-    let blocked = create_event(
+    // No skip_hold: implicit hold auto-shrinks to 0 (no headroom)
+    // and the bare debit lands. Pre-Fix-B this returned 422.
+    let resp = create_event(
         &node,
         &serde_json::json!({"bucket":"b","account":"a","amount":-1000}),
     )
     .await;
-    assert_eq!(blocked.status().as_u16(), 422);
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: CreateEventResponse = resp.json().await.unwrap();
+    assert_eq!(body.balance, 0);
+    assert_eq!(body.available_balance, 0);
 
-    // With skip_hold: same debit lands. Single Standard event, no
-    // ReservationCreate.
+    // Refund and try again with skip_hold to verify the explicit
+    // opt-out still works (single Standard event, no ReservationCreate).
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
     let resp = create_event(
         &node,
         &serde_json::json!({
@@ -864,9 +875,67 @@ async fn skip_hold_lets_full_balance_debit_through() {
     assert_eq!(resp.status().as_u16(), 201);
     let body: CreateEventResponse = resp.json().await.unwrap();
     assert_eq!(body.balance, 0);
-    assert_eq!(body.available_balance, 0);
     assert_eq!(body.emitted_events.len(), 1);
     assert_eq!(body.emitted_events[0].r#type, EventType::Standard);
+
+    node.shutdown().await;
+}
+
+/// Fix A regression: the rejection envelope sets `hold_blocking=true`
+/// and includes a `hint` only when the implicit hold is the sole
+/// reason for the rejection. Bare insufficient-funds keeps
+/// `hold_blocking=false`. The `hold_blocking=true` path is reachable
+/// only with a caller-supplied explicit `hold_amount` (the implicit
+/// path auto-shrinks itself after Fix B).
+#[tokio::test]
+async fn insufficient_funds_distinguishes_hold_blocked_from_truly_short() {
+    let node = TestNode::start_with(|mut c| {
+        c.hold_multiplier = 5;
+        c.hold_duration_ms = 600_000;
+        c
+    })
+    .await;
+
+    create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":1000}),
+    )
+    .await;
+
+    // Bare overdraft: -2000 against 1000 with no max_overdraft. The
+    // hold isn't the issue; hold_blocking must be false and hint
+    // must be absent.
+    let resp = create_event(
+        &node,
+        &serde_json::json!({"bucket":"b","account":"a","amount":-2000}),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 422);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"].as_str().unwrap(), "insufficient_funds");
+    // `hold_blocking` and `hint` are omitted when the rejection is
+    // genuine (skip_serializing_if). Either omitted or explicitly
+    // false/null is acceptable.
+    assert_ne!(body.get("hold_blocking").and_then(|v| v.as_bool()), Some(true));
+    assert!(body.get("hint").and_then(|v| v.as_str()).is_none());
+
+    // Explicit caller-supplied hold that's too large to fit, even
+    // though the bare debit math would clear. Expect hold_blocking=true
+    // and a non-empty hint pointing at skip_hold.
+    let resp = create_event(
+        &node,
+        &serde_json::json!({
+            "bucket":"b","account":"a","amount":-500,
+            "hold_amount":2000,"hold_expires_at_unix_ms":9999999999999i64,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 422);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"].as_str().unwrap(), "insufficient_funds");
+    assert_eq!(body["hold_blocking"].as_bool(), Some(true));
+    let hint = body["hint"].as_str().expect("hint string present");
+    assert!(hint.contains("skip_hold"), "hint should mention skip_hold: {hint}");
 
     node.shutdown().await;
 }

@@ -222,8 +222,12 @@ impl LocalCreateMode {
 #[derive(Debug, Clone)]
 pub enum CreateLocalEventError {
     /// The debit would leave the account below its overdraft floor.
-    /// Tuple: (balance, available_balance, projected_available).
-    InsufficientFunds(i64, i64, i64),
+    /// Tuple: (balance, available_balance, projected_available,
+    /// hold_blocking) — `hold_blocking=true` when the rejection is
+    /// caused only by the implicit hold (the bare debit math would
+    /// have cleared the floor); the gateway surfaces this as a hint
+    /// to retry with `skip_hold: true`.
+    InsufficientFunds(i64, i64, i64, bool),
     /// The target bucket name is reserved for internal use (e.g.
     /// `__meta__`, `__billing__<...>`) and never accepts client writes.
     BucketReserved(String),
@@ -733,8 +737,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                 (amt, expires)
             }
             None => {
-                let requested_hold = if input.amount < 0 && self.hold_multiplier > 0 {
-                    input.amount.unsigned_abs() * self.hold_multiplier
+                let raw_hold = if input.amount < 0 && self.hold_multiplier > 0 {
+                    input.amount.unsigned_abs().saturating_mul(self.hold_multiplier)
                 } else {
                     0
                 };
@@ -748,6 +752,27 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                     now_ms,
                     renewal_window_ms,
                 );
+                // Fix B: shrink the implicit hold to whatever
+                // headroom the bare debit leaves, so a near- or
+                // full-balance debit isn't spuriously rejected by
+                // the soft sibling-coordination reservation. The
+                // hold is a hint, not a hard withholding; if there's
+                // no balance to lock, requesting a 5× lock is just
+                // overhead. Caller-supplied `hold_amount` (above)
+                // and the explicit `skip_hold: true` path still let
+                // operators opt in to specific sizes.
+                let max_useful_hold: u64 = if input.amount < 0 {
+                    let avail = state.available_balance(now_ms);
+                    let floor = -(input.max_overdraft as i64);
+                    // Headroom that remains after the bare debit; the
+                    // implicit hold can't exceed this without driving
+                    // projected_available below the floor.
+                    let headroom = (avail + input.amount - floor).max(0);
+                    headroom as u64
+                } else {
+                    raw_hold
+                };
+                let requested_hold = raw_hold.min(max_useful_hold);
                 let hold_amount = requested_hold.saturating_sub(current_hold);
                 let hold_expires_at_unix_ms = if hold_amount > 0 {
                     now_ms + self.hold_duration_ms
@@ -764,10 +789,17 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             let projected = avail + input.amount - (hold_amount as i64);
             let floor = -(input.max_overdraft as i64);
             if projected < floor {
+                // Fix A: distinguish the case where it's the
+                // implicit hold itself making the math fail —
+                // service.rs surfaces this to clients as a hint
+                // pointing at `skip_hold: true`.
+                let bare_projected = avail + input.amount;
+                let hold_blocking = bare_projected >= floor;
                 return Err(CreateLocalEventError::InsufficientFunds(
                     state.balance,
                     avail,
                     projected,
+                    hold_blocking,
                 ));
             }
         }
@@ -880,10 +912,14 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         let projected = avail - (hold_amount as i64);
         let floor = -(input.max_overdraft as i64);
         if projected < floor {
+            // Pure reserve: the caller chose this hold size
+            // explicitly, so `skip_hold` doesn't apply — flag
+            // hold_blocking=false to keep the hint accurate.
             return Err(CreateLocalEventError::InsufficientFunds(
                 state.balance,
                 avail,
                 projected,
+                false,
             ));
         }
 
@@ -1116,7 +1152,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             Err(error) => {
                 warn!(error = %error, bucket = %bucket, "bucket allocator failed");
                 Err(CreateLocalEventError::InsufficientFunds(
-                    balance, available, balance,
+                    balance, available, balance, false,
                 ))
             }
         }
@@ -1238,7 +1274,7 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             .await
             .map_err(|error| {
                 warn!(error = %error, "meta bucket allocator failed");
-                CreateLocalEventError::InsufficientFunds(0, 0, 0)
+                CreateLocalEventError::InsufficientFunds(0, 0, 0, false)
             })?;
 
         let now_ms = Event::now_ms();
@@ -2169,6 +2205,81 @@ mod tests {
         assert_eq!(state.account_balance("b", "a"), -999);
     }
 
+    /// Fix B regression: a debit equal to the full available balance
+    /// must not be rejected purely because the implicit hold
+    /// (`5×|amount|` here) doesn't fit. The hold should auto-shrink
+    /// to whatever headroom remains (zero, in the full-balance case).
+    #[tokio::test]
+    async fn full_balance_debit_with_implicit_hold_succeeds() {
+        let state = make_state_with_holds().await;
+        // Fund with 1000.
+        state
+            .create_local_event(
+                "b".into(),
+                "a".into(),
+                1000,
+                None,
+                0,
+                uuid::Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+        // Spend the whole balance. With multiplier=5 and no auto-shrink
+        // the implicit hold would be 5000, which would push projected
+        // to -5000 and trip the overdraft guard. With auto-shrink it
+        // shrinks to 0 (no headroom left to lock) and the debit lands.
+        let result = state
+            .create_local_event(
+                "b".into(),
+                "a".into(),
+                -1000,
+                None,
+                0,
+                uuid::Uuid::new_v4().to_string(),
+            )
+            .await;
+        assert!(result.is_ok(), "full-balance debit was rejected: {result:?}");
+        assert_eq!(state.account_balance("b", "a"), 0);
+    }
+
+    /// Fix A regression: when the overdraft guard *does* reject, the
+    /// `hold_blocking` flag distinguishes "the bare debit math fails"
+    /// (false) from "only the implicit hold is in the way" (true). The
+    /// gateway uses this to surface the `skip_hold: true` hint.
+    #[tokio::test]
+    async fn insufficient_funds_flags_hold_blocking() {
+        let state = make_state_with_holds().await;
+        state
+            .create_local_event(
+                "b".into(),
+                "a".into(),
+                1000,
+                None,
+                0,
+                uuid::Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+        // Bare math: -2000 against 1000 balance with no overdraft —
+        // genuinely insufficient regardless of hold sizing.
+        let truly_short = state
+            .create_local_event(
+                "b".into(),
+                "a".into(),
+                -2000,
+                None,
+                0,
+                uuid::Uuid::new_v4().to_string(),
+            )
+            .await;
+        match truly_short {
+            Err(CreateLocalEventError::InsufficientFunds(_, _, _, hold_blocking)) => {
+                assert!(!hold_blocking, "bare insufficient-funds must not blame the hold");
+            }
+            other => panic!("expected InsufficientFunds, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn replication_dedup() {
         let state = make_state().await;
@@ -2369,6 +2480,16 @@ mod tests {
 
     #[tokio::test]
     async fn larger_followup_debit_only_reserves_hold_shortfall() {
+        // Originally this test pinned the pre-Fix-B behaviour that
+        // grew the per-origin hold to the full `5×|amount|` raw size
+        // by topping up the shortfall on each follow-up debit. After
+        // Fix B (§11.4 auto-shrink) the implicit hold caps at the
+        // headroom that remains after the bare debit clears the
+        // floor — `min(raw_hold, max(0, avail + amount - floor))`.
+        // The first debit holds the full 500 because there's plenty
+        // of headroom; the second debit's max-useful-hold is only
+        // 250 (avail 400 − amount 150), and the existing 500 already
+        // covers that, so no new reservation is minted.
         let state = make_state_with_holds().await;
         state
             .create_local_event(
@@ -2407,19 +2528,22 @@ mod tests {
             .await
             .unwrap();
 
+        // First debit: charge + reservation for 500.
         assert_eq!(first.emitted_events.len(), 2);
         assert_eq!(first.emitted_events[0].hold_amount, 500);
-        assert_eq!(second.emitted_events.len(), 2);
-        assert_eq!(second.emitted_events[0].hold_amount, 250);
+        // Second debit: max-useful-hold (250) is already covered by
+        // the existing 500-reservation, so no new reservation event.
+        assert_eq!(second.emitted_events.len(), 1);
         assert_eq!(state.account_balance("b", "a"), 750);
-        assert_eq!(state.account_available_balance("b", "a"), 0);
+        // Balance 750 − existing hold 500 = available 250.
+        assert_eq!(state.account_available_balance("b", "a"), 250);
         let balances = state.get_all_balances();
         let account = balances
             .iter()
             .find(|balance| balance.bucket == "b" && balance.account == "a")
             .unwrap();
-        assert_eq!(account.reserved_by_origin["test-node"].reserved_amount, 750);
-        assert_eq!(account.reserved_by_origin["test-node"].reservation_count, 2);
+        assert_eq!(account.reserved_by_origin["test-node"].reserved_amount, 500);
+        assert_eq!(account.reserved_by_origin["test-node"].reservation_count, 1);
     }
 
     #[tokio::test]
