@@ -24,12 +24,24 @@ pub enum ShardError {
 
     /// 422 — the debit would exceed available balance plus any
     /// `max_overdraft`. `available_balance` tells you how short you are.
+    ///
+    /// `hold_blocking` is set when the rejection is caused only by
+    /// the implicit `hold_multiplier × |amount|` reservation — the
+    /// bare debit math (`available_balance + amount`) would have
+    /// cleared the floor. Callers can retry with `skip_hold: true`
+    /// (or a smaller explicit `hold_amount`); `hint`, when present,
+    /// is a one-line operator-facing message saying as much.
     #[error("insufficient funds: balance={balance}, available={available_balance}")]
     InsufficientFunds {
         balance: i64,
         available_balance: i64,
         /// The `max_overdraft` the request opted into (0 if none).
         limit: i64,
+        /// True when the rejection is purely caused by the implicit
+        /// hold; false otherwise.
+        hold_blocking: bool,
+        /// Operator-facing hint when `hold_blocking`. None otherwise.
+        hint: Option<String>,
     },
 
     /// 402 — the account is out of credits and no top-up plan is active.
@@ -78,6 +90,10 @@ pub(crate) struct GatewayErrorBody {
     pub available_balance: Option<i64>,
     #[serde(default)]
     pub limit: Option<i64>,
+    #[serde(default)]
+    pub hold_blocking: Option<bool>,
+    #[serde(default)]
+    pub hint: Option<String>,
 }
 
 impl GatewayErrorBody {
@@ -107,11 +123,15 @@ pub(crate) fn from_status(status: u16, body: Option<GatewayErrorBody>) -> ShardE
                 balance: None,
                 available_balance: None,
                 limit: None,
+                hold_blocking: None,
+                hint: None,
             });
             ShardError::InsufficientFunds {
                 balance: b.balance.unwrap_or(0),
                 available_balance: b.available_balance.unwrap_or(0),
                 limit: b.limit.unwrap_or(0),
+                hold_blocking: b.hold_blocking.unwrap_or(false),
+                hint: b.hint,
             }
         }
         503 | 504 => ShardError::ServiceUnavailable(text),
