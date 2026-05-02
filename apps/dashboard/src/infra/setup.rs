@@ -17,8 +17,16 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 pub async fn init_app_state() -> anyhow::Result<AppState> {
     let config = AppConfig::from_env();
+    // Stale pooled connections were the source of a long-running 500
+    // on /api/developer/buckets — every request waited the full 5 s
+    // per-edge timeout × 3 edges before giving up. Short pool-idle
+    // timeout + connect-timeout + TCP keepalive poison dead sockets
+    // before reqwest tries to reuse them.
     let edge_http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .pool_idle_timeout(std::time::Duration::from_secs(10))
+        .tcp_keepalive(std::time::Duration::from_secs(20))
         .build()?;
 
     let postgres_arc = Arc::new(postgres_persistence(&config.database_url).await?);

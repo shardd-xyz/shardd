@@ -686,17 +686,35 @@ pub(crate) async fn proxy_gateway_json(
 }
 
 async fn prioritized_edges(state: &AppState) -> Vec<PublicEdgeConfig> {
-    let mut ready = Vec::new();
-    let mut fallback = Vec::new();
-
+    // Probe every configured edge in parallel — a single slow health
+    // check used to bottleneck the whole list serially, blowing the
+    // 5 s per-request timeout before we ever picked a primary.
+    let mut handles = Vec::with_capacity(state.config.public_edges.len());
     for edge in &state.config.public_edges {
-        if edge_ready(state, edge).await {
-            ready.push(edge.clone());
-        } else {
-            fallback.push(edge.clone());
+        let edge_owned = edge.clone();
+        // tokio::spawn runs the probes concurrently on the runtime;
+        // avoids pulling in `futures` just for join_all here.
+        let state_ref = state.clone();
+        handles.push(tokio::spawn(async move {
+            let ok = edge_ready(&state_ref, &edge_owned).await;
+            (edge_owned, ok)
+        }));
+    }
+    let mut results = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(pair) = h.await {
+            results.push(pair);
         }
     }
-
+    let mut ready = Vec::new();
+    let mut fallback = Vec::new();
+    for (edge, ok) in results {
+        if ok {
+            ready.push(edge);
+        } else {
+            fallback.push(edge);
+        }
+    }
     ready.extend(fallback);
     ready
 }
