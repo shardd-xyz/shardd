@@ -71,6 +71,8 @@ impl std::fmt::Display for ScopeMatchType {
 pub enum MachineAction {
     Read,
     Write,
+    ReadOwnAccount,
+    WriteOwnAccount,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,15 +397,24 @@ pub fn hash_api_key(raw_key: &str) -> String {
 }
 
 pub fn scope_allows(scope: &DeveloperApiKeyScope, action: &MachineAction, bucket: &str) -> bool {
-    if scope.resource_type != ScopeResourceType::Bucket {
+    let permission_granted = match action {
+        MachineAction::Read | MachineAction::ReadOwnAccount => scope.can_read,
+        MachineAction::Write | MachineAction::WriteOwnAccount => scope.can_write,
+    };
+    if !permission_granted {
         return false;
     }
 
-    let permission_granted = match action {
-        MachineAction::Read => scope.can_read,
-        MachineAction::Write => scope.can_write,
-    };
-    if !permission_granted {
+    if matches!(
+        action,
+        MachineAction::ReadOwnAccount | MachineAction::WriteOwnAccount
+    ) {
+        return scope.resource_type == ScopeResourceType::Control
+            && scope.match_type == ScopeMatchType::All
+            && scope.resource_value.is_none();
+    }
+
+    if scope.resource_type != ScopeResourceType::Bucket {
         return false;
     }
 
@@ -439,6 +450,19 @@ mod tests {
         }
     }
 
+    fn control_scope(can_read: bool, can_write: bool) -> DeveloperApiKeyScope {
+        DeveloperApiKeyScope {
+            id: Uuid::new_v4(),
+            api_key_id: Uuid::new_v4(),
+            resource_type: ScopeResourceType::Control,
+            match_type: ScopeMatchType::All,
+            resource_value: None,
+            can_read,
+            can_write,
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn prefix_scope_matches_subtree() {
         let scope = scope(ScopeMatchType::Prefix, Some("orders/"), true, false);
@@ -451,6 +475,29 @@ mod tests {
         let scope = scope(ScopeMatchType::Exact, Some("orders"), false, true);
         assert!(scope_allows(&scope, &MachineAction::Write, "orders"));
         assert!(!scope_allows(&scope, &MachineAction::Write, "orders/eu"));
+    }
+
+    #[test]
+    fn control_scope_allows_own_account_actions_only() {
+        let read_only = control_scope(true, false);
+        assert!(scope_allows(
+            &read_only,
+            &MachineAction::ReadOwnAccount,
+            "*"
+        ));
+        assert!(!scope_allows(
+            &read_only,
+            &MachineAction::WriteOwnAccount,
+            "*"
+        ));
+        assert!(!scope_allows(&read_only, &MachineAction::Read, "orders"));
+
+        let bucket_scope = scope(ScopeMatchType::All, None, true, true);
+        assert!(!scope_allows(
+            &bucket_scope,
+            &MachineAction::ReadOwnAccount,
+            "*"
+        ));
     }
 
     #[test]

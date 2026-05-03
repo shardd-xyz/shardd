@@ -22,6 +22,7 @@ pub struct PublicEdgeConfig {
 
 pub struct AppConfig {
     pub jwt_secret: SecretString,
+    pub dashboard_session_key: SecretString,
     pub access_token_ttl: Duration,
     pub refresh_token_ttl: Duration,
     pub resend_api_key: SecretString,
@@ -49,6 +50,8 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn from_env() -> Self {
         let jwt_secret: SecretString = SecretString::new(get_env::<String>("JWT_SECRET").into());
+        let dashboard_session_key: SecretString =
+            SecretString::new(get_env::<String>("DASHBOARD_SESSION_KEY").into());
 
         let refresh_token_ttl_days: i64 = get_env_default("REFRESH_TOKEN_TTL_DAYS", 30);
 
@@ -93,6 +96,7 @@ impl AppConfig {
 
         Self {
             jwt_secret,
+            dashboard_session_key,
             access_token_ttl: Duration::seconds(access_token_ttl_secs),
             refresh_token_ttl: Duration::days(refresh_token_ttl_days),
             resend_api_key,

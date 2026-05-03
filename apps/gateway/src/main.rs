@@ -121,6 +121,8 @@ struct PublicEdgeDirectory {
 enum GatewayMachineAction {
     Read,
     Write,
+    ReadOwnAccount,
+    WriteOwnAccount,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +222,12 @@ struct BucketEventsQuery {
     account: Option<String>,
     page: Option<usize>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeBucketDeleteQuery {
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -385,6 +393,17 @@ fn build_app(state: AppState) -> Router {
         )
         .route("/internal/buckets/deleted", get(internal_deleted_buckets))
         .route("/internal/admin/events", get(internal_admin_events))
+        .route("/v1/me/buckets", get(me_bucket_list))
+        .route("/v1/me/buckets/deleted", get(me_deleted_buckets))
+        .route(
+            "/v1/me/buckets/:bucket/events",
+            get(me_bucket_events).post(me_create_bucket_event),
+        )
+        .route(
+            "/v1/me/buckets/:bucket",
+            get(me_bucket_detail).delete(me_delete_bucket),
+        )
+        .route("/v1/me/events", get(me_user_events))
         .route("/health", get(proxy_health))
         .route("/state", get(proxy_state))
         .route("/events", get(proxy_events).post(proxy_create_event))
@@ -879,20 +898,35 @@ async fn internal_bucket_list(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    bucket_list_for_user(&state, user_id, query).await
+}
 
+async fn me_bucket_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<BucketListQuery>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::ReadOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    bucket_list_for_user(&state, authz.user_id, query).await
+}
+
+async fn bucket_list_for_user(state: &AppState, user_id: Uuid, query: BucketListQuery) -> Response {
     let (node, balances) =
-        match request_best_typed(&state, NodeRpcRequest::Balances, expect_balances).await {
+        match request_best_typed(state, NodeRpcRequest::Balances, expect_balances).await {
             Ok(values) => values,
             Err(response) => return response,
         };
-    let events = match request_best_typed(&state, NodeRpcRequest::Events, expect_events).await {
-        Ok((_, events)) => events,
-        Err(response) => return response,
-    };
 
     let q = normalized_query(query.q.as_deref());
     let (page, limit, offset) = pagination(query.page, query.limit, 25, 100);
-    let mut buckets = summarize_user_buckets(user_id, balances, events);
+    let mut buckets = summarize_user_buckets(user_id, balances);
     if let Some(needle) = q.as_deref() {
         buckets.retain(|summary| contains_case_insensitive(&summary.bucket, needle));
     }
@@ -930,28 +964,61 @@ async fn internal_bucket_detail(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    bucket_detail_for_user(&state, user_id, bucket).await
+}
 
+async fn me_bucket_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::ReadOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    bucket_detail_for_user(&state, authz.user_id, bucket).await
+}
+
+async fn bucket_detail_for_user(state: &AppState, user_id: Uuid, bucket: String) -> Response {
     let (node, balances) =
-        match request_best_typed(&state, NodeRpcRequest::Balances, expect_balances).await {
+        match request_best_typed(state, NodeRpcRequest::Balances, expect_balances).await {
             Ok(values) => values,
             Err(response) => return response,
         };
-    let events = match request_best_typed(&state, NodeRpcRequest::Events, expect_events).await {
+    let internal_bucket = internal_bucket_for_user(user_id, &bucket);
+    let mut event_totals_by_account = BTreeMap::<String, usize>::new();
+    let mut last_event_by_account = BTreeMap::<String, u64>::new();
+    let mut last_event_at_unix_ms: Option<u64> = None;
+
+    let event_probe = EventsFilterRequest {
+        bucket: Some(internal_bucket.clone()),
+        bucket_prefix: None,
+        account: None,
+        origin: None,
+        event_type: None,
+        since_unix_ms: None,
+        until_unix_ms: None,
+        search: None,
+        limit: 500,
+        offset: 0,
+    };
+    let events = match request_best_typed(
+        state,
+        NodeRpcRequest::EventsFilter(event_probe),
+        expect_events_filter,
+    )
+    .await
+    {
         Ok((_, events)) => events,
         Err(response) => return response,
     };
 
-    let internal_bucket = internal_bucket_for_user(user_id, &bucket);
-    let mut event_totals_by_account = BTreeMap::<String, usize>::new();
-    let mut last_event_by_account = BTreeMap::<String, u64>::new();
-    let mut total_event_count = 0usize;
-    let mut last_event_at_unix_ms: Option<u64> = None;
-
+    let total_event_count = events.total as usize;
     for event in events.events {
-        if event.bucket != internal_bucket {
-            continue;
-        }
-        total_event_count += 1;
         last_event_at_unix_ms = Some(
             last_event_at_unix_ms.map_or(event.created_at_unix_ms, |current| {
                 current.max(event.created_at_unix_ms)
@@ -1031,57 +1098,69 @@ async fn internal_bucket_events(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    bucket_events_for_user(&state, user_id, bucket, query).await
+}
 
-    let (node, events) =
-        match request_best_typed(&state, NodeRpcRequest::Events, expect_events).await {
-            Ok(values) => values,
+async fn me_bucket_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+    Query(query): Query<BucketEventsQuery>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::ReadOwnAccount).await {
+            Ok(value) => value,
             Err(response) => return response,
         };
+    bucket_events_for_user(&state, authz.user_id, bucket, query).await
+}
 
+async fn bucket_events_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    bucket: String,
+    query: BucketEventsQuery,
+) -> Response {
     let internal_bucket = internal_bucket_for_user(user_id, &bucket);
     let q = normalized_query(query.q.as_deref());
     let account = normalized_query(query.account.as_deref());
     let (page, limit, offset) = pagination(query.page, query.limit, 25, 200);
-    let mut filtered = events
-        .events
-        .into_iter()
-        .filter(|event| event.bucket == internal_bucket)
-        .filter(|event| {
-            account
-                .as_deref()
-                .is_none_or(|needle| contains_case_insensitive(&event.account, needle))
-        })
-        .filter(|event| {
-            q.as_deref()
-                .is_none_or(|needle| event_matches_query(event, needle))
-        })
-        .map(|mut event| {
-            event.bucket = bucket.clone();
-            event
-        })
-        .collect::<Vec<_>>();
+    let request = EventsFilterRequest {
+        bucket: Some(internal_bucket),
+        bucket_prefix: None,
+        account,
+        origin: None,
+        event_type: None,
+        since_unix_ms: None,
+        until_unix_ms: None,
+        search: q,
+        limit: limit as u32,
+        offset: offset as u32,
+    };
+    let (node, mut page_body) = match request_best_typed::<EventsFilterResponse, _>(
+        state,
+        NodeRpcRequest::EventsFilter(request),
+        expect_events_filter,
+    )
+    .await
+    {
+        Ok(values) => values,
+        Err(response) => return response,
+    };
 
-    filtered.sort_by(|left, right| {
-        right
-            .created_at_unix_ms
-            .cmp(&left.created_at_unix_ms)
-            .then_with(|| right.origin_seq.cmp(&left.origin_seq))
-            .then_with(|| right.event_id.cmp(&left.event_id))
-    });
-
-    let total = filtered.len();
-    let events = filtered
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
+    for event in &mut page_body.events {
+        event.bucket = bucket.clone();
+    }
 
     json_response(
         StatusCode::OK,
         &node,
         &InternalBucketEventsResponse {
-            events,
-            total,
+            events: page_body.events,
+            total: page_body.total as usize,
             page,
             limit,
         },
@@ -1097,9 +1176,34 @@ async fn internal_create_bucket_event(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    create_bucket_event_for_user(&state, user_id, bucket, request).await
+}
 
+async fn me_create_bucket_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+    Json(request): Json<GatewayBucketEventRequest>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::WriteOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    create_bucket_event_for_user(&state, authz.user_id, bucket, request).await
+}
+
+async fn create_bucket_event_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    bucket: String,
+    request: GatewayBucketEventRequest,
+) -> Response {
     let internal_bucket = internal_bucket_for_user(user_id, &bucket);
-    submit_create_event(&state, &bucket, internal_bucket, request, true, false).await
+    submit_create_event(state, &bucket, internal_bucket, request, true, false).await
 }
 
 async fn submit_create_event(
@@ -1281,6 +1385,49 @@ async fn internal_meta_bucket_delete(
     }
 }
 
+async fn me_delete_bucket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+    Query(query): Query<MeBucketDeleteQuery>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::WriteOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    if query.mode.as_deref().unwrap_or("nuke") != "nuke" {
+        return bad_request("only mode=nuke is supported by the gateway");
+    }
+    let internal_bucket = internal_bucket_for_user(authz.user_id, &bucket);
+    match state
+        .mesh
+        .request_best_with_node(NodeRpcRequest::DeleteBucket {
+            bucket: internal_bucket,
+            reason: Some(format!("user:{}", authz.user_id)),
+        })
+        .await
+    {
+        Ok((node, Ok(NodeRpcResponse::DeleteBucket(event)))) => json_response(
+            StatusCode::OK,
+            &node,
+            &serde_json::json!({
+                "event_id": event.event_id,
+                "bucket": bucket,
+            }),
+        ),
+        Ok((node, Ok(other))) => gateway_internal_response(
+            Some(&node),
+            format!("unexpected node response for DeleteBucket: {:?}", other),
+        ),
+        Ok((node, Err(error))) => rpc_error_response(&node, error),
+        Err(error) => gateway_unavailable_response(error.to_string()),
+    }
+}
+
 /// Admin events viewer backend. Machine-auth only; the dashboard's
 /// `AdminUser`-gated `/api/admin/events` route is the only legit caller.
 /// Serves the single-node filtered view + per-edge heads snapshot
@@ -1397,7 +1544,30 @@ async fn internal_user_events(
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    user_events_for_user(&state, user_id, query).await
+}
 
+async fn me_user_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<InternalAdminEventsQuery>,
+) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::ReadOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    user_events_for_user(&state, authz.user_id, query).await
+}
+
+async fn user_events_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    query: InternalAdminEventsQuery,
+) -> Response {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     // A specific user-facing bucket filter translates to the exact
@@ -1420,7 +1590,7 @@ async fn internal_user_events(
     };
 
     let mut page = match request_best_typed::<EventsFilterResponse, _>(
-        &state,
+        state,
         NodeRpcRequest::EventsFilter(request),
         expect_events_filter,
     )
@@ -1433,7 +1603,7 @@ async fn internal_user_events(
     rewrite_events_to_external(user_id, &mut page);
 
     let replication = if query.replication.unwrap_or(false) {
-        let mut snap = collect_replication_snapshot(&state).await;
+        let mut snap = collect_replication_snapshot(state).await;
         for entry in snap.per_node.values_mut() {
             entry.heads = rewrite_bucket_keys(user_id, std::mem::take(&mut entry.heads));
             entry.max_known_seqs =
@@ -1505,19 +1675,47 @@ async fn internal_deleted_buckets(State(state): State<AppState>, headers: Header
     if let Err(response) = authorize_internal_machine(&state, &headers) {
         return *response;
     }
+    deleted_buckets_response(&state, None).await
+}
 
+async fn me_deleted_buckets(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(auth) = &state.auth else {
+        return gateway_unavailable_response("dashboard auth is not configured".to_string());
+    };
+    let authz =
+        match authorize_me_request(auth, &headers, GatewayMachineAction::ReadOwnAccount).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    deleted_buckets_response(&state, Some(authz.user_id)).await
+}
+
+async fn deleted_buckets_response(state: &AppState, user_id: Option<Uuid>) -> Response {
     match request_best_typed::<Vec<DeletedBucketEntry>, _>(
-        &state,
+        state,
         NodeRpcRequest::DeletedBuckets,
         expect_deleted_buckets,
     )
     .await
     {
-        Ok((node, entries)) => json_response(
-            StatusCode::OK,
-            &node,
-            &serde_json::json!({ "buckets": entries }),
-        ),
+        Ok((node, entries)) => {
+            let buckets = match user_id {
+                Some(user_id) => entries
+                    .into_iter()
+                    .filter_map(|mut entry| {
+                        let external = external_bucket_from_internal_user(user_id, &entry.name)?;
+                        entry.name = external;
+                        Some(entry)
+                    })
+                    .collect::<Vec<_>>(),
+                None => entries,
+            };
+            json_response(
+                StatusCode::OK,
+                &node,
+                &serde_json::json!({ "buckets": buckets }),
+            )
+        }
         Err(response) => response,
     }
 }
@@ -1796,6 +1994,36 @@ async fn authorize_request(
     }
 }
 
+async fn authorize_me_request(
+    auth: &GatewayAuthClient,
+    headers: &HeaderMap,
+    action: GatewayMachineAction,
+) -> Result<AuthorizedBucket, Response> {
+    let api_key = bearer_token(headers).ok_or_else(|| unauthorized("missing bearer api key"))?;
+    let decision = auth
+        .authorize(api_key, action, "*")
+        .await
+        .map_err(|error| gateway_unavailable_response(error.to_string()))?;
+
+    if decision.allowed {
+        let Some(user_id) = decision.user_id else {
+            return Err(gateway_unavailable_response(
+                "dashboard introspection returned no user id".to_string(),
+            ));
+        };
+        return Ok(AuthorizedBucket { user_id });
+    }
+
+    let reason = decision
+        .denial_reason
+        .unwrap_or_else(|| "access_denied".to_string());
+    if decision.valid {
+        Err(forbidden(&reason))
+    } else {
+        Err(unauthorized(&reason))
+    }
+}
+
 fn authorize_internal_machine(state: &AppState, headers: &HeaderMap) -> Result<(), Box<Response>> {
     let Some(auth) = &state.auth else {
         return Err(Box::new(gateway_unavailable_response(
@@ -1895,23 +2123,7 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
-fn event_matches_query(event: &Event, needle: &str) -> bool {
-    contains_case_insensitive(&event.event_id, needle)
-        || contains_case_insensitive(&event.account, needle)
-        || contains_case_insensitive(&event.r#type.to_string(), needle)
-        || contains_case_insensitive(&event.amount.to_string(), needle)
-        || event
-            .note
-            .as_deref()
-            .is_some_and(|value| contains_case_insensitive(value, needle))
-        || contains_case_insensitive(&event.idempotency_nonce, needle)
-}
-
-fn summarize_user_buckets(
-    user_id: Uuid,
-    balances: BalancesResponse,
-    events: EventsResponse,
-) -> Vec<InternalBucketSummary> {
+fn summarize_user_buckets(user_id: Uuid, balances: BalancesResponse) -> Vec<InternalBucketSummary> {
     let mut aggregates = BTreeMap::<String, BucketAggregate>::new();
 
     for account in balances.accounts {
@@ -1924,21 +2136,6 @@ fn summarize_user_buckets(
         entry.active_hold_total += account.active_hold_total;
         entry.account_count += 1;
         entry.balance_event_count += account.event_count;
-    }
-
-    for event in events.events {
-        let Some(bucket) = external_bucket_from_internal_user(user_id, &event.bucket) else {
-            continue;
-        };
-        let entry = aggregates.entry(bucket).or_default();
-        entry.observed_event_count += 1;
-        entry.last_event_at_unix_ms = Some(
-            entry
-                .last_event_at_unix_ms
-                .map_or(event.created_at_unix_ms, |current| {
-                    current.max(event.created_at_unix_ms)
-                }),
-        );
     }
 
     aggregates
@@ -2214,6 +2411,8 @@ fn auth_cache_key(api_key: &str, action: &GatewayMachineAction, bucket: &str) ->
     match action {
         GatewayMachineAction::Read => hasher.update(b"read"),
         GatewayMachineAction::Write => hasher.update(b"write"),
+        GatewayMachineAction::ReadOwnAccount => hasher.update(b"read_own_account"),
+        GatewayMachineAction::WriteOwnAccount => hasher.update(b"write_own_account"),
     }
     hasher.update(b"\0");
     hasher.update(bucket.as_bytes());

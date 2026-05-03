@@ -74,6 +74,115 @@ describe("Client", () => {
     expect(result.deduplicated).toBe(false);
   });
 
+  it("listMyBuckets passes query and decodes the response", async () => {
+    const healthOk = {
+      edge_id: "use1",
+      region: "us-east-1",
+      base_url: "https://use1.api.shardd.xyz",
+      ready: true,
+      discovered_nodes: 3,
+      healthy_nodes: 3,
+      best_node_rtt_ms: 5,
+      sync_gap: 0,
+      overloaded: false,
+      auth_enabled: true,
+    };
+    const seenUrls: string[] = [];
+    const seenHeaders: Headers[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      seenUrls.push(url);
+      if (init?.headers) seenHeaders.push(new Headers(init.headers));
+      if (/\/gateway\/health/.test(url)) {
+        return new Response(JSON.stringify(healthOk), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (/\/v1\/me\/buckets($|\?)/.test(url)) {
+        return new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                bucket: "demo",
+                total_balance: 1000,
+                available_balance: 900,
+                active_hold_total: 100,
+                account_count: 2,
+                event_count: 5,
+                last_event_at_unix_ms: 1700000000000,
+              },
+            ],
+            total: 1,
+            page: 1,
+            limit: 25,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected URL in mock: ${url}`);
+    });
+
+    const client = new Client("dash-token", {
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+    const result = await client.listMyBuckets({ page: 1, limit: 25, q: "demo" });
+
+    expect(result.total).toBe(1);
+    expect(result.buckets[0]!.bucket).toBe("demo");
+    const apiUrl = seenUrls.find((u) => u.includes("/v1/me/buckets"))!;
+    expect(apiUrl).toMatch(/page=1/);
+    expect(apiUrl).toMatch(/limit=25/);
+    expect(apiUrl).toMatch(/q=demo/);
+    expect(seenHeaders.at(-1)!.get("Authorization")).toBe("Bearer dash-token");
+  });
+
+  it("withApiKey reuses selector and swaps the bearer token", async () => {
+    const healthOk = {
+      edge_id: "use1",
+      region: "us-east-1",
+      base_url: "https://use1.api.shardd.xyz",
+      ready: true,
+      discovered_nodes: 3,
+      healthy_nodes: 3,
+      best_node_rtt_ms: 5,
+      sync_gap: 0,
+      overloaded: false,
+      auth_enabled: true,
+    };
+    let healthHits = 0;
+    const seenAuth: Array<string | null> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (/\/gateway\/health/.test(url)) {
+        healthHits++;
+        return new Response(JSON.stringify(healthOk), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (/\/v1\/me\/buckets\/deleted/.test(url)) {
+        seenAuth.push(new Headers(init?.headers).get("Authorization"));
+        return new Response(JSON.stringify({ buckets: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected URL in mock: ${url}`);
+    });
+
+    const client = new Client("first-token", {
+      fetch: fetchImpl as unknown as typeof fetch,
+    });
+    await client.listMyDeletedBuckets();
+    const swapped = client.withApiKey("second-token");
+    await swapped.listMyDeletedBuckets();
+
+    // Selector is shared, so probing should only happen once.
+    expect(healthHits).toBe(3);
+    expect(seenAuth).toEqual(["Bearer first-token", "Bearer second-token"]);
+  });
+
   it("surfaces 422 as InsufficientFundsError with balance fields", async () => {
     const healthOk = {
       edge_id: "use1",

@@ -9,11 +9,12 @@ use reqwest::{Method, header::HeaderMap as ReqwestHeaderMap};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use url::form_urlencoded::{Serializer, byte_serialize};
+use url::form_urlencoded::Serializer;
 
 use crate::{
     adapters::http::{app_state::AppState, extractors::Authenticated},
     app_error::{AppError, AppResult},
+    application::dashboard_session,
     infra::config::PublicEdgeConfig,
     use_cases::buckets_registry::{BucketStatusFilter, OwnedBucket, validate_bucket_name},
 };
@@ -73,28 +74,12 @@ async fn purge_bucket(
         return Err(AppError::NotFound);
     }
 
-    // Fire the meta event via the gateway internal route.
-    let response = proxy_gateway_value(
-        &state,
-        Method::POST,
-        "/internal/meta/bucket-delete".to_string(),
-        Some(json!({
-            "bucket": bucket,
-            "reason": format!("user:{}", user.id),
-        })),
-    )
-    .await?;
-    if !response.status.is_success() {
-        return Err(AppError::Internal(format!(
-            "gateway rejected bucket-delete: {} {}",
-            response.status,
-            response
-                .payload
-                .as_ref()
-                .and_then(|v| v.get("error").and_then(|s| s.as_str()))
-                .unwrap_or("unknown")
-        )));
-    }
+    // Fire the meta event via the SDK so gateway failover/retry logic
+    // is shared with normal data-plane calls.
+    session_client(&state, user.id)?
+        .delete_my_bucket(&bucket, shardd::BucketDeleteMode::Nuke)
+        .await
+        .map_err(sdk_error)?;
 
     // Archive the dashboard-side row so the UI hides the bucket right
     // away, even before the meta event has propagated to every node.
@@ -196,33 +181,22 @@ async fn list_events(
     // at 500.
     let limit = q.limit.unwrap_or(100).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
-    let limit_s = limit.to_string();
-    let offset_s = offset.to_string();
-    let since_s = q.since_ms.map(|v| v.to_string());
-    let until_s = q.until_ms.map(|v| v.to_string());
-    let replication_s = match q.replication {
-        Some(true) => Some("true".to_string()),
-        _ => None,
-    };
-    let path = path_with_query(
-        &format!(
-            "/internal/users/{}/events",
-            encode_path_segment(&user.id.to_string())
-        ),
-        &[
-            ("bucket", q.bucket.as_deref()),
-            ("account", q.account.as_deref()),
-            ("origin", q.origin.as_deref()),
-            ("event_type", q.event_type.as_deref()),
-            ("since_ms", since_s.as_deref()),
-            ("until_ms", until_s.as_deref()),
-            ("search", q.search.as_deref()),
-            ("limit", Some(&limit_s)),
-            ("offset", Some(&offset_s)),
-            ("replication", replication_s.as_deref()),
-        ],
-    );
-    proxy_gateway_json(&state, Method::GET, path, None).await
+    let payload = session_client(&state, user.id)?
+        .list_my_events(
+            q.bucket.as_deref(),
+            q.account.as_deref(),
+            q.origin.as_deref(),
+            q.event_type.as_deref(),
+            q.since_ms,
+            q.until_ms,
+            q.search.as_deref(),
+            Some(limit as u32),
+            Some(offset as u32),
+            q.replication,
+        )
+        .await
+        .map_err(sdk_error)?;
+    json_response(StatusCode::OK, &payload)
 }
 
 async fn list_edges(State(state): State<AppState>) -> Json<Vec<EdgeSummary>> {
@@ -291,26 +265,12 @@ enum BucketStatus {
 /// buckets do not (the `BucketDelete` cascade wiped them).
 #[derive(Debug, Deserialize)]
 struct GatewayBucketSummary {
-    bucket: String,
     total_balance: i64,
     available_balance: i64,
     account_count: usize,
     event_count: usize,
     #[serde(default)]
     last_event_at_unix_ms: Option<u64>,
-}
-
-/// Payload shape returned by `GET /internal/buckets/deleted`.
-#[derive(Debug, Deserialize)]
-struct GatewayDeletedBucketsResponse {
-    #[serde(default)]
-    buckets: Vec<GatewayDeletedBucket>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GatewayDeletedBucket {
-    name: String,
-    deleted_at_unix_ms: u64,
 }
 
 /// What the dashboard UI consumes. Balances/accounts/event_count are
@@ -391,42 +351,34 @@ async fn list_buckets(
     // Mesh summaries (balances, account/event counts, last activity).
     // Gateway only returns buckets that still exist on the mesh —
     // nuked buckets will simply be absent from this map.
-    let summary_path = format!(
-        "/internal/users/{}/buckets",
-        encode_path_segment(&user.id.to_string())
-    );
-    let summaries_fut = proxy_gateway_value(&state, Method::GET, summary_path, None);
+    let client = session_client(&state, user.id)?;
+    let summaries_fut = client.list_my_buckets(None, None, None);
 
     // Cluster-wide tombstone set. Used to mark nuked rows and to prevent
     // classifying a still-archived-but-not-nuked bucket as nuked.
-    let deleted_fut = proxy_gateway_value(
-        &state,
-        Method::GET,
-        "/internal/buckets/deleted".to_string(),
-        None,
-    );
+    let deleted_fut = client.list_my_deleted_buckets();
 
-    let (summaries_resp, deleted_resp) = tokio::try_join!(summaries_fut, deleted_fut)?;
+    let (summaries_resp, deleted_resp) =
+        tokio::try_join!(summaries_fut, deleted_fut).map_err(sdk_error)?;
 
     let mut summaries: std::collections::HashMap<String, GatewayBucketSummary> =
         std::collections::HashMap::new();
-    if let Some(payload) = summaries_resp.payload.as_ref()
-        && let Some(Value::Array(list)) = payload.get("buckets")
-    {
-        for item in list {
-            if let Ok(summary) = serde_json::from_value::<GatewayBucketSummary>(item.clone()) {
-                summaries.insert(summary.bucket.clone(), summary);
-            }
-        }
+    for summary in summaries_resp.buckets {
+        summaries.insert(
+            summary.bucket.clone(),
+            GatewayBucketSummary {
+                total_balance: summary.total_balance,
+                available_balance: summary.available_balance,
+                account_count: summary.account_count,
+                event_count: summary.event_count,
+                last_event_at_unix_ms: summary.last_event_at_unix_ms,
+            },
+        );
     }
 
     let mut deleted: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    if let Some(payload) = deleted_resp.payload.as_ref()
-        && let Ok(parsed) = serde_json::from_value::<GatewayDeletedBucketsResponse>(payload.clone())
-    {
-        for entry in parsed.buckets {
-            deleted.insert(entry.name, entry.deleted_at_unix_ms);
-        }
+    for entry in deleted_resp.buckets {
+        deleted.insert(entry.name, entry.deleted_at_unix_ms);
     }
 
     // Build the unified list: classify each registry row, attach mesh
@@ -491,11 +443,7 @@ async fn list_buckets(
     })
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(proxied_response(
-        StatusCode::OK,
-        summaries_resp.headers,
-        payload,
-    ))
+    Ok((StatusCode::OK, Json(payload)).into_response())
 }
 
 async fn get_bucket_detail(
@@ -503,17 +451,11 @@ async fn get_bucket_detail(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
 ) -> AppResult<Response> {
-    proxy_gateway_json(
-        &state,
-        Method::GET,
-        format!(
-            "/internal/users/{}/buckets/{}",
-            encode_path_segment(&user.id.to_string()),
-            encode_path_segment(&bucket)
-        ),
-        None,
-    )
-    .await
+    let payload = session_client(&state, user.id)?
+        .get_my_bucket(&bucket)
+        .await
+        .map_err(sdk_error)?;
+    json_response(StatusCode::OK, &payload)
 }
 
 async fn list_bucket_events(
@@ -522,22 +464,17 @@ async fn list_bucket_events(
     Path(bucket): Path<String>,
     Query(query): Query<BucketEventsQuery>,
 ) -> AppResult<Response> {
-    let page = query.page.map(|value| value.to_string());
-    let limit = query.limit.map(|value| value.to_string());
-    let path = path_with_query(
-        &format!(
-            "/internal/users/{}/buckets/{}/events",
-            encode_path_segment(&user.id.to_string()),
-            encode_path_segment(&bucket)
-        ),
-        &[
-            ("q", query.q.as_deref()),
-            ("account", query.account.as_deref()),
-            ("page", page.as_deref()),
-            ("limit", limit.as_deref()),
-        ],
-    );
-    proxy_gateway_json(&state, Method::GET, path, None).await
+    let payload = session_client(&state, user.id)?
+        .list_my_bucket_events(
+            &bucket,
+            query.q.as_deref(),
+            query.account.as_deref(),
+            query.page,
+            query.limit,
+        )
+        .await
+        .map_err(sdk_error)?;
+    json_response(StatusCode::OK, &payload)
 }
 
 async fn create_bucket_event(
@@ -546,77 +483,61 @@ async fn create_bucket_event(
     Path(bucket): Path<String>,
     Json(request): Json<CreateBucketEventRequest>,
 ) -> AppResult<Response> {
-    proxy_gateway_json(
-        &state,
-        Method::POST,
-        format!(
-            "/internal/users/{}/buckets/{}/events",
-            encode_path_segment(&user.id.to_string()),
-            encode_path_segment(&bucket)
-        ),
-        Some(serde_json::to_value(request).expect("event request serializes")),
-    )
-    .await
+    let (status, payload) = session_client(&state, user.id)?
+        .create_my_bucket_event_with_status(
+            &bucket,
+            &shardd::CreateMyEventBody {
+                account: request.account,
+                amount: request.amount,
+                note: request.note,
+                idempotency_nonce: request.idempotency_nonce,
+                max_overdraft: request.max_overdraft,
+                min_acks: request.min_acks,
+                ack_timeout_ms: request.ack_timeout_ms,
+                hold_amount: None,
+                hold_expires_at_unix_ms: None,
+                settle_reservation: None,
+                release_reservation: None,
+                skip_hold: None,
+            },
+        )
+        .await
+        .map_err(sdk_error)?;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    json_response(status, &payload)
 }
 
-pub(crate) struct GatewayValueResponse {
-    pub status: StatusCode,
-    pub headers: ReqwestHeaderMap,
-    pub payload: Option<Value>,
+fn session_client(state: &AppState, user_id: uuid::Uuid) -> AppResult<shardd::Client> {
+    let token = dashboard_session::issue(
+        user_id,
+        &state.config.dashboard_session_key,
+        time::Duration::minutes(5),
+    )?;
+    Ok(state.shardd_client.with_api_key(token))
 }
 
-pub(crate) async fn proxy_gateway_value(
-    state: &AppState,
-    method: Method,
-    path: String,
-    body: Option<Value>,
-) -> AppResult<GatewayValueResponse> {
-    let Some(secret) = state.config.machine_auth_shared_secret.as_ref() else {
-        return Err(crate::app_error::AppError::Internal(
-            "machine auth is not configured".into(),
-        ));
-    };
+fn json_response<T: Serialize>(status: StatusCode, payload: &T) -> AppResult<Response> {
+    let value = serde_json::to_value(payload).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok((status, Json(value)).into_response())
+}
 
-    let edges = prioritized_edges(state).await;
-    if edges.is_empty() {
-        return Err(crate::app_error::AppError::Internal(
-            "no public edges configured".into(),
-        ));
-    }
-
-    let mut last_error: Option<String> = None;
-    for edge in edges {
-        let url = format!("{}{}", edge.base_url.trim_end_matches('/'), path);
-        let mut request = state
-            .edge_http
-            .request(method.clone(), url)
-            .header("x-machine-auth-secret", secret.expose_secret());
-        if let Some(payload) = body.as_ref() {
-            request = request.json(payload);
+fn sdk_error(error: shardd::ShardError) -> AppError {
+    match error {
+        shardd::ShardError::InvalidInput(message) => AppError::InvalidInput(message),
+        shardd::ShardError::Unauthorized(_) => AppError::InvalidCredentials,
+        shardd::ShardError::Forbidden(_) => AppError::Forbidden,
+        shardd::ShardError::NotFound(_) => AppError::NotFound,
+        shardd::ShardError::InsufficientFunds { .. } => {
+            AppError::InvalidInput("insufficient funds".into())
         }
-        match request.send().await {
-            Ok(response) => {
-                let status = response.status();
-                let headers = response.headers().clone();
-                let payload = parse_gateway_payload(response).await;
-                if status.is_server_error() {
-                    last_error = Some(format!("edge {} returned {status}", edge.edge_id));
-                    continue;
-                }
-                return Ok(GatewayValueResponse {
-                    status,
-                    headers,
-                    payload: Some(payload),
-                });
-            }
-            Err(error) => {
-                last_error = Some(error.to_string());
-            }
+        shardd::ShardError::PaymentRequired => AppError::Forbidden,
+        shardd::ShardError::ServiceUnavailable(message) => AppError::Internal(message),
+        shardd::ShardError::RequestTimeout => {
+            AppError::Internal("gateway request timed out".into())
         }
+        shardd::ShardError::Decode(message) => AppError::Internal(message),
+        shardd::ShardError::Network(message) => AppError::Internal(message),
     }
-    Err(crate::app_error::AppError::Internal(
-        last_error.unwrap_or_else(|| "no public edges responded".to_string()),
-    ))
 }
 
 pub(crate) async fn proxy_gateway_json(
@@ -756,10 +677,6 @@ fn copy_gateway_headers(target: &mut axum::http::HeaderMap, source: &ReqwestHead
 
 fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
-}
-
-fn encode_path_segment(value: &str) -> String {
-    byte_serialize(value.as_bytes()).collect()
 }
 
 pub(crate) fn path_with_query(path: &str, pairs: &[(&str, Option<&str>)]) -> String {

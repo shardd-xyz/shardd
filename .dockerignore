@@ -1,4 +1,5 @@
 target/
+**/target/
 demo/
 .git/
 infra/secrets/*

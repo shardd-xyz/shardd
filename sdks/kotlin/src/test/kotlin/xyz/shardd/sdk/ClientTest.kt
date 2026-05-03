@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ClientTest {
@@ -56,6 +57,86 @@ class ClientTest {
         assertEquals("evt-1", result.event.eventId)
         assertEquals(500, result.balance)
         assertFalse(result.deduplicated)
+    }
+
+    @Test
+    fun listMyBucketsPassesQueryAndDecodes() {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val seenPaths = mutableListOf<String>()
+        val seenAuths = mutableListOf<String?>()
+        server.dispatcher =
+            object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    seenPaths.add(request.path ?: "")
+                    seenAuths.add(request.getHeader("Authorization"))
+                    val path = request.path?.substringBefore('?')
+                    return when {
+                        path == "/gateway/health" -> MockResponse().setResponseCode(200).setBody(healthOk(baseUrl))
+                        path == "/v1/me/buckets" ->
+                            MockResponse().setResponseCode(200).setBody(
+                                """
+                                {
+                                  "buckets": [{
+                                    "bucket": "demo",
+                                    "total_balance": 1000,
+                                    "available_balance": 900,
+                                    "active_hold_total": 100,
+                                    "account_count": 2,
+                                    "event_count": 5,
+                                    "last_event_at_unix_ms": 1700000000000
+                                  }],
+                                  "total": 1,
+                                  "page": 1,
+                                  "limit": 25
+                                }
+                                """.trimIndent(),
+                            )
+                        else -> MockResponse().setResponseCode(500).setBody("""{"error":"unmocked ${request.path}"}""")
+                    }
+                }
+            }
+        val client = Client("dash-token", ClientOptions(edges = listOf(server.url("/").toString())))
+        val result = client.listMyBuckets(page = 1, limit = 25, q = "demo")
+
+        assertEquals(1, result.total)
+        assertEquals("demo", result.buckets.first().bucket)
+        val apiPath = seenPaths.first { it.startsWith("/v1/me/buckets") }
+        assertTrue(apiPath.contains("page=1"))
+        assertTrue(apiPath.contains("limit=25"))
+        assertTrue(apiPath.contains("q=demo"))
+        assertEquals("Bearer dash-token", seenAuths.last { it?.startsWith("Bearer") == true })
+    }
+
+    @Test
+    fun withApiKeyReusesSelectorAndSwapsToken() {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        var healthHits = 0
+        val seenAuths = mutableListOf<String?>()
+        server.dispatcher =
+            object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val path = request.path?.substringBefore('?')
+                    return when (path) {
+                        "/gateway/health" -> {
+                            healthHits++
+                            MockResponse().setResponseCode(200).setBody(healthOk(baseUrl))
+                        }
+                        "/v1/me/buckets/deleted" -> {
+                            seenAuths.add(request.getHeader("Authorization"))
+                            MockResponse().setResponseCode(200).setBody("""{"buckets":[]}""")
+                        }
+                        else -> MockResponse().setResponseCode(500).setBody("""{"error":"unmocked ${request.path}"}""")
+                    }
+                }
+            }
+        val client = Client("first", ClientOptions(edges = listOf(server.url("/").toString())))
+        client.listMyDeletedBuckets()
+        val swapped = client.withApiKey("second")
+        swapped.listMyDeletedBuckets()
+
+        // single bootstrap edge => one health probe across both calls
+        assertEquals(1, healthHits)
+        assertEquals(listOf("Bearer first", "Bearer second"), seenAuths)
     }
 
     @Test

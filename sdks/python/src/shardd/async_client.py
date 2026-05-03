@@ -20,9 +20,15 @@ from .types import (
     AccountDetail,
     Balances,
     CreateEventResult,
+    DeleteBucketResult,
+    DeletedBucketsList,
     EdgeHealth,
     EdgeInfo,
     EventList,
+    MyBucketDetail,
+    MyBucketEventsList,
+    MyBucketsList,
+    MyEventsList,
     Reservation,
 )
 
@@ -40,16 +46,30 @@ class AsyncShardd:
         edges: Optional[list[str]] = None,
         timeout_s: float = _DEFAULT_TIMEOUT,
         http: Optional[httpx.AsyncClient] = None,
+        _selector: Optional[_core.EdgeSelector] = None,
+        _owns_http: Optional[bool] = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("api_key is required")
         self._api_key = api_key
-        self._selector = _core.EdgeSelector(edges or _core.DEFAULT_EDGES)
+        self._selector = _selector or _core.EdgeSelector(edges or _core.DEFAULT_EDGES)
         self._http = http or httpx.AsyncClient(
             timeout=timeout_s,
             headers={"User-Agent": "shardd-python-async/0.1"},
         )
-        self._owns_http = http is None
+        self._owns_http = http is None if _owns_http is None else _owns_http
+
+    def with_api_key(self, api_key: str) -> "AsyncShardd":
+        """Clone this client with a different bearer token. The HTTP
+        connection pool and edge selector are shared."""
+        if not api_key or not api_key.strip():
+            raise ValueError("api_key is required")
+        return AsyncShardd(
+            api_key,
+            http=self._http,
+            _selector=self._selector,
+            _owns_http=False,
+        )
 
     async def aclose(self) -> None:
         if self._owns_http:
@@ -201,6 +221,141 @@ class AsyncShardd:
         )
         return AccountDetail.from_dict(data)
 
+    # ── /v1/me/* (dashboard-namespaced) ───────────────────────────
+
+    async def list_my_buckets(
+        self,
+        *,
+        page: Optional[int] = None,
+        limit: Optional[int] = None,
+        q: Optional[str] = None,
+    ) -> MyBucketsList:
+        params = _drop_none({"page": page, "limit": limit, "q": q})
+        data = await self._request("GET", "/v1/me/buckets", params=params)
+        return MyBucketsList.from_dict(data)
+
+    async def list_my_deleted_buckets(self) -> DeletedBucketsList:
+        data = await self._request("GET", "/v1/me/buckets/deleted")
+        return DeletedBucketsList.from_dict(data)
+
+    async def get_my_bucket(self, bucket: str) -> MyBucketDetail:
+        from urllib.parse import quote
+
+        data = await self._request("GET", f"/v1/me/buckets/{quote(bucket, safe='')}")
+        return MyBucketDetail.from_dict(data)
+
+    async def list_my_bucket_events(
+        self,
+        bucket: str,
+        *,
+        q: Optional[str] = None,
+        account: Optional[str] = None,
+        page: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> MyBucketEventsList:
+        from urllib.parse import quote
+
+        params = _drop_none({"q": q, "account": account, "page": page, "limit": limit})
+        data = await self._request(
+            "GET",
+            f"/v1/me/buckets/{quote(bucket, safe='')}/events",
+            params=params,
+        )
+        return MyBucketEventsList.from_dict(data)
+
+    async def create_my_bucket_event(
+        self,
+        bucket: str,
+        *,
+        account: str,
+        amount: int,
+        note: Optional[str] = None,
+        idempotency_nonce: Optional[str] = None,
+        max_overdraft: Optional[int] = None,
+        min_acks: Optional[int] = None,
+        ack_timeout_ms: Optional[int] = None,
+        hold_amount: Optional[int] = None,
+        hold_expires_at_unix_ms: Optional[int] = None,
+        settle_reservation: Optional[str] = None,
+        release_reservation: Optional[str] = None,
+        skip_hold: Optional[bool] = None,
+    ) -> CreateEventResult:
+        from urllib.parse import quote
+
+        body: dict[str, Any] = {"account": account, "amount": amount}
+        if note is not None:
+            body["note"] = note
+        if idempotency_nonce is not None:
+            body["idempotency_nonce"] = idempotency_nonce
+        if max_overdraft is not None:
+            body["max_overdraft"] = max_overdraft
+        if min_acks is not None:
+            body["min_acks"] = min_acks
+        if ack_timeout_ms is not None:
+            body["ack_timeout_ms"] = ack_timeout_ms
+        if hold_amount is not None:
+            body["hold_amount"] = hold_amount
+        if hold_expires_at_unix_ms is not None:
+            body["hold_expires_at_unix_ms"] = hold_expires_at_unix_ms
+        if settle_reservation is not None:
+            body["settle_reservation"] = settle_reservation
+        if release_reservation is not None:
+            body["release_reservation"] = release_reservation
+        if skip_hold is not None:
+            body["skip_hold"] = skip_hold
+        data = await self._request(
+            "POST",
+            f"/v1/me/buckets/{quote(bucket, safe='')}/events",
+            json=body,
+        )
+        return CreateEventResult.from_dict(data)
+
+    async def list_my_events(
+        self,
+        *,
+        bucket: Optional[str] = None,
+        account: Optional[str] = None,
+        origin: Optional[str] = None,
+        event_type: Optional[str] = None,
+        since_ms: Optional[int] = None,
+        until_ms: Optional[int] = None,
+        search: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        replication: Optional[bool] = None,
+    ) -> MyEventsList:
+        params = _drop_none(
+            {
+                "bucket": bucket,
+                "account": account,
+                "origin": origin,
+                "event_type": event_type,
+                "since_ms": since_ms,
+                "until_ms": until_ms,
+                "search": search,
+                "limit": limit,
+                "offset": offset,
+                "replication": replication,
+            }
+        )
+        data = await self._request("GET", "/v1/me/events", params=params)
+        return MyEventsList.from_dict(data)
+
+    async def delete_my_bucket(
+        self,
+        bucket: str,
+        *,
+        mode: str = "nuke",
+    ) -> DeleteBucketResult:
+        from urllib.parse import quote
+
+        data = await self._request(
+            "DELETE",
+            f"/v1/me/buckets/{quote(bucket, safe='')}",
+            params={"mode": mode},
+        )
+        return DeleteBucketResult.from_dict(data)
+
     async def edges(self) -> list[EdgeInfo]:
         await self._ensure_probed()
         live = self._selector.live_urls()
@@ -305,6 +460,18 @@ class AsyncShardd:
 
 def _trim(s: str) -> str:
     return s[:-1] if s.endswith("/") else s
+
+
+def _drop_none(d: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        else:
+            out[k] = str(v)
+    return out
 
 
 def _maybe_json(resp: httpx.Response) -> Optional[dict[str, Any]]:

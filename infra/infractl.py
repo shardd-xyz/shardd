@@ -869,6 +869,9 @@ def build_service_env(
             {
                 "POSTGRES_PASSWORD": ensure_generated_secret(machine_state, f"{service_name}.postgres_password"),
                 "JWT_SECRET": lookup_secret_env(deployment, "dashboard_jwt_secret", strict=strict),
+                "DASHBOARD_SESSION_KEY": lookup_secret_env(
+                    deployment, "dashboard_session_key", strict=strict
+                ),
                 "RESEND_API_KEY": lookup_secret_env(
                     deployment, "dashboard_resend_api_key", strict=strict
                 ),

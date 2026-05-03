@@ -224,6 +224,7 @@ At minimum:
 export SHARDD_CLUSTER_KEY='replace-with-a-long-random-secret'
 export SHARDD_DASHBOARD_MACHINE_AUTH_SECRET='replace-me'
 export SHARDD_DASHBOARD_JWT_SECRET='replace-me'
+export SHARDD_DASHBOARD_SESSION_KEY='replace-me'
 export SHARDD_DASHBOARD_RESEND_API_KEY='replace-me'
 export CLOUDFLARE_ZONE_ID='replace-me'
 export CLOUDFLARE_ACCOUNT_ID='replace-me'

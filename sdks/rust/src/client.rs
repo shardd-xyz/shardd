@@ -7,8 +7,10 @@ use serde::de::DeserializeOwned;
 use crate::edges::{fetch_directory, EdgeSelector, DEFAULT_EDGES};
 use crate::error::{from_status, GatewayErrorBody, ShardError};
 use crate::types::{
-    AccountDetail, Balances, CreateEventBody, CreateEventOptions, CreateEventResult, EdgeHealth,
-    EdgeInfo, Event, EventList, Reservation,
+    AccountDetail, Balances, BucketDeleteMode, CreateEventBody, CreateEventOptions,
+    CreateEventResult, CreateMyEventBody, DeleteBucketResult, DeletedBucketsList, EdgeHealth,
+    EdgeInfo, Event, EventList, MyBucketDetail, MyBucketEventsList, MyBucketsList, MyEventsList,
+    Reservation,
 };
 
 /// Builder for a [`Client`]. Use this to override the default prod
@@ -83,7 +85,7 @@ impl ClientBuilder {
             inner: Arc::new(ClientInner {
                 api_key,
                 http,
-                selector: EdgeSelector::new(bootstrap),
+                selector: Arc::new(EdgeSelector::new(bootstrap)),
             }),
         })
     }
@@ -111,7 +113,7 @@ pub struct Client {
 struct ClientInner {
     api_key: String,
     http: reqwest::Client,
-    selector: EdgeSelector,
+    selector: Arc<EdgeSelector>,
 }
 
 impl Client {
@@ -122,6 +124,19 @@ impl Client {
 
     pub fn builder() -> ClientBuilder {
         ClientBuilder::default()
+    }
+
+    /// Clone this client while replacing only the bearer token. The
+    /// HTTP pool and edge selector are shared, so callers can mint
+    /// short-lived tokens without losing failover state.
+    pub fn with_api_key(&self, api_key: String) -> Self {
+        Self {
+            inner: Arc::new(ClientInner {
+                api_key,
+                http: self.inner.http.clone(),
+                selector: self.inner.selector.clone(),
+            }),
+        }
     }
 
     /// Create a ledger event. Positive `amount` = credit, negative = debit.
@@ -205,6 +220,178 @@ impl Client {
         Ok(dir.edges)
     }
 
+    pub async fn list_my_buckets(
+        &self,
+        page: Option<usize>,
+        limit: Option<usize>,
+        q: Option<&str>,
+    ) -> Result<MyBucketsList, ShardError> {
+        #[derive(serde::Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            page: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limit: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            q: Option<&'a str>,
+        }
+        self.request_json(
+            Method::GET,
+            "/v1/me/buckets",
+            None::<&()>,
+            Some(&Query { page, limit, q }),
+        )
+        .await
+    }
+
+    pub async fn list_my_deleted_buckets(&self) -> Result<DeletedBucketsList, ShardError> {
+        self.request_json(
+            Method::GET,
+            "/v1/me/buckets/deleted",
+            None::<&()>,
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_my_bucket(&self, bucket: &str) -> Result<MyBucketDetail, ShardError> {
+        let path = format!("/v1/me/buckets/{}", urlencoded(bucket));
+        self.request_json(Method::GET, &path, None::<&()>, None::<&()>)
+            .await
+    }
+
+    pub async fn list_my_bucket_events(
+        &self,
+        bucket: &str,
+        q: Option<&str>,
+        account: Option<&str>,
+        page: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<MyBucketEventsList, ShardError> {
+        #[derive(serde::Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            q: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            account: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            page: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limit: Option<usize>,
+        }
+        let path = format!("/v1/me/buckets/{}/events", urlencoded(bucket));
+        self.request_json(
+            Method::GET,
+            &path,
+            None::<&()>,
+            Some(&Query {
+                q,
+                account,
+                page,
+                limit,
+            }),
+        )
+        .await
+    }
+
+    pub async fn create_my_bucket_event(
+        &self,
+        bucket: &str,
+        body: &CreateMyEventBody,
+    ) -> Result<CreateEventResult, ShardError> {
+        self.create_my_bucket_event_with_status(bucket, body)
+            .await
+            .map(|(_, value)| value)
+    }
+
+    pub async fn create_my_bucket_event_with_status(
+        &self,
+        bucket: &str,
+        body: &CreateMyEventBody,
+    ) -> Result<(u16, CreateEventResult), ShardError> {
+        let path = format!("/v1/me/buckets/{}/events", urlencoded(bucket));
+        self.request_json_with_status(Method::POST, &path, Some(body), None::<&()>)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_my_events(
+        &self,
+        bucket: Option<&str>,
+        account: Option<&str>,
+        origin: Option<&str>,
+        event_type: Option<&str>,
+        since_ms: Option<u64>,
+        until_ms: Option<u64>,
+        search: Option<&str>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+        replication: Option<bool>,
+    ) -> Result<MyEventsList, ShardError> {
+        #[derive(serde::Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            bucket: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            account: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            origin: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            event_type: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            since_ms: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            until_ms: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            search: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limit: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            offset: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            replication: Option<bool>,
+        }
+        self.request_json(
+            Method::GET,
+            "/v1/me/events",
+            None::<&()>,
+            Some(&Query {
+                bucket,
+                account,
+                origin,
+                event_type,
+                since_ms,
+                until_ms,
+                search,
+                limit,
+                offset,
+                replication,
+            }),
+        )
+        .await
+    }
+
+    pub async fn delete_my_bucket(
+        &self,
+        bucket: &str,
+        mode: BucketDeleteMode,
+    ) -> Result<DeleteBucketResult, ShardError> {
+        #[derive(serde::Serialize)]
+        struct Query<'a> {
+            mode: &'a str,
+        }
+        let path = format!("/v1/me/buckets/{}", urlencoded(bucket));
+        self.request_json(
+            Method::DELETE,
+            &path,
+            None::<&()>,
+            Some(&Query {
+                mode: mode.as_str(),
+            }),
+        )
+        .await
+    }
+
     /// Health of a specific edge, or the currently-pinned edge if
     /// `base_url` is `None`.
     pub async fn health(&self, base_url: Option<&str>) -> Result<EdgeHealth, ShardError> {
@@ -252,6 +439,23 @@ impl Client {
         body: Option<&B>,
         query: Option<&Q>,
     ) -> Result<R, ShardError>
+    where
+        B: serde::Serialize + ?Sized,
+        Q: serde::Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        self.request_json_with_status(method, path, body, query)
+            .await
+            .map(|(_, value)| value)
+    }
+
+    async fn request_json_with_status<B, Q, R>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        query: Option<&Q>,
+    ) -> Result<(u16, R), ShardError>
     where
         B: serde::Serialize + ?Sized,
         Q: serde::Serialize + ?Sized,
@@ -452,15 +656,16 @@ impl Client {
     }
 }
 
-async fn handle_response<R: DeserializeOwned>(resp: Response) -> Result<R, ShardError> {
+async fn handle_response<R: DeserializeOwned>(resp: Response) -> Result<(u16, R), ShardError> {
     let status = resp.status();
+    let code = status.as_u16();
     if status.is_success() {
         return resp
             .json::<R>()
             .await
+            .map(|body| (code, body))
             .map_err(|e| ShardError::Decode(e.to_string()));
     }
-    let code = status.as_u16();
     let body_bytes = resp.bytes().await.unwrap_or_default();
     let err_body: Option<GatewayErrorBody> = if body_bytes.is_empty() {
         None

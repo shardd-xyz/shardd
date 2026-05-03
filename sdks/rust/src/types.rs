@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A ledger event — the atomic unit of state in shardd. Every event is
@@ -72,6 +74,45 @@ pub struct CreateEventOptions {
     pub skip_hold: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateMyEventBody {
+    pub account: String,
+    pub amount: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_overdraft: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_acks: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ack_timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_amount: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_expires_at_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settle_reservation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_reservation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_hold: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BucketDeleteMode {
+    Nuke,
+}
+
+impl BucketDeleteMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Nuke => "nuke",
+        }
+    }
+}
+
 /// Handle returned by [`Client::reserve`](crate::Client::reserve). Pass
 /// `reservation_id` to [`Client::settle`](crate::Client::settle) for
 /// one-shot capture or [`Client::release`](crate::Client::release) to
@@ -111,7 +152,7 @@ pub(crate) struct CreateEventBody<'a> {
 }
 
 /// Result of a successful [`Client::create_event`](crate::Client::create_event).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEventResult {
     /// The primary event for the request — the charge for a charge or
     /// settle, the `reservation_create` for a reserve, the `hold_release`
@@ -135,7 +176,7 @@ pub struct CreateEventResult {
     pub acks: AckInfo,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AckInfo {
     #[serde(default)]
     pub requested: u32,
@@ -145,9 +186,92 @@ pub struct AckInfo {
     pub timeout: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventList {
     pub events: Vec<Event>,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub page: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyBucketsList {
+    pub buckets: Vec<MyBucketSummary>,
+    pub total: usize,
+    pub page: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyBucketSummary {
+    pub bucket: String,
+    pub total_balance: i64,
+    pub available_balance: i64,
+    pub active_hold_total: i64,
+    pub account_count: usize,
+    pub event_count: usize,
+    #[serde(default)]
+    pub last_event_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyBucketDetail {
+    pub summary: MyBucketSummary,
+    pub accounts: Vec<MyBucketAccountSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyBucketAccountSummary {
+    pub account: String,
+    pub balance: i64,
+    pub available_balance: i64,
+    pub active_hold_total: i64,
+    pub event_count: usize,
+    #[serde(default)]
+    pub last_event_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedBucketsList {
+    #[serde(default)]
+    pub buckets: Vec<DeletedBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedBucket {
+    pub name: String,
+    pub deleted_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyBucketEventsList {
+    pub events: Vec<Event>,
+    pub total: usize,
+    pub page: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyEventsList {
+    pub events: Vec<Event>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
+    #[serde(default)]
+    pub heads: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub max_known_seqs: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub replication: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteBucketResult {
+    pub event_id: String,
+    pub bucket: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

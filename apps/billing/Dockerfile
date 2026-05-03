@@ -9,6 +9,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY apps ./apps
 COPY libs ./libs
+COPY sdks ./sdks
 
 ENV SQLX_OFFLINE=true
 RUN cargo build --release -p shardd-billing

@@ -153,3 +153,110 @@ export interface CreateEventBody {
   release_reservation?: string;
   skip_hold?: boolean;
 }
+
+/** Body for `POST /v1/me/buckets/:bucket/events`. The `bucket` is on
+ *  the URL, not in the body. */
+export interface CreateMyEventBody {
+  account: string;
+  amount: number;
+  note?: string;
+  idempotency_nonce?: string;
+  max_overdraft?: number;
+  min_acks?: number;
+  ack_timeout_ms?: number;
+  hold_amount?: number;
+  hold_expires_at_unix_ms?: number;
+  settle_reservation?: string;
+  release_reservation?: string;
+  skip_hold?: boolean;
+}
+
+export interface MyBucketSummary {
+  bucket: string;
+  total_balance: number;
+  available_balance: number;
+  active_hold_total: number;
+  account_count: number;
+  event_count: number;
+  last_event_at_unix_ms?: number | null;
+}
+
+export interface MyBucketsList {
+  buckets: MyBucketSummary[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface MyBucketAccountSummary {
+  account: string;
+  balance: number;
+  available_balance: number;
+  active_hold_total: number;
+  event_count: number;
+  last_event_at_unix_ms?: number | null;
+}
+
+export interface MyBucketDetail {
+  summary: MyBucketSummary;
+  accounts: MyBucketAccountSummary[];
+}
+
+export interface DeletedBucket {
+  name: string;
+  deleted_at_unix_ms: number;
+}
+
+export interface DeletedBucketsList {
+  buckets: DeletedBucket[];
+}
+
+export interface MyBucketEventsList {
+  events: Event[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface MyEventsList {
+  events: Event[];
+  total: number;
+  limit: number;
+  offset: number;
+  heads?: Record<string, number>;
+  max_known_seqs?: Record<string, number>;
+  replication?: unknown;
+}
+
+export interface DeleteBucketResult {
+  event_id: string;
+  bucket: string;
+}
+
+export type BucketDeleteMode = "nuke";
+
+export interface ListMyBucketsOptions {
+  page?: number;
+  limit?: number;
+  q?: string;
+}
+
+export interface ListMyBucketEventsOptions {
+  q?: string;
+  account?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface ListMyEventsOptions {
+  bucket?: string;
+  account?: string;
+  origin?: string;
+  event_type?: string;
+  since_ms?: number;
+  until_ms?: number;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  replication?: boolean;
+}

@@ -48,6 +48,7 @@
       "secret_env": {
         "dashboard_machine_auth_secret": "SHARDD_DASHBOARD_MACHINE_AUTH_SECRET",
         "dashboard_jwt_secret": "SHARDD_DASHBOARD_JWT_SECRET",
+        "dashboard_session_key": "SHARDD_DASHBOARD_SESSION_KEY",
         "dashboard_resend_api_key": "SHARDD_DASHBOARD_RESEND_API_KEY",
         "tailscale_auth_key": "TAILSCALE_AUTH_KEY"
       },

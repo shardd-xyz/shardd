@@ -25,6 +25,7 @@ RUN rm -rf apps libs
 # Copy real source
 COPY apps/ apps/
 COPY libs/ libs/
+COPY sdks/ sdks/
 
 # Touch to invalidate cache
 RUN touch apps/node/src/main.rs apps/cli/src/main.rs libs/types/src/lib.rs libs/storage/src/lib.rs

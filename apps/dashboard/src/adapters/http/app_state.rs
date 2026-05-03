@@ -18,6 +18,7 @@ use crate::{
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub edge_http: reqwest::Client,
+    pub shardd_client: shardd::Client,
     pub auth_use_cases: Arc<AuthUseCases>,
     pub developer_auth_use_cases: Arc<DeveloperAuthUseCases>,
     pub cli_auth_use_cases: Arc<CliAuthUseCases>,

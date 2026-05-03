@@ -5,6 +5,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY apps ./apps
 COPY libs ./libs
+COPY sdks ./sdks
 
 RUN cargo build --release -p shardd-gateway
 

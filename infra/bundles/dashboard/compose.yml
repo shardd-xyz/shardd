@@ -48,6 +48,7 @@ services:
       DATABASE_URL: postgres://saassy:${POSTGRES_PASSWORD}@postgres:5432/user_gateway
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET}
+      DASHBOARD_SESSION_KEY: ${DASHBOARD_SESSION_KEY}
       RESEND_API_KEY: ${RESEND_API_KEY}
       EMAIL_FROM: ${EMAIL_FROM}
       APP_ORIGIN: ${APP_ORIGIN}

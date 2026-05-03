@@ -417,7 +417,29 @@ Response (422 — overdraft rejected):
 **GET /persistence** — Count and age of unpersisted events
 **GET /debug/origin/:id** — Sequences and gaps for a specific origin
 
-### 7.2 Peer Protocols
+### 7.2 User Dashboard Endpoints
+
+`/v1/me/*` routes are public gateway routes authenticated with
+`Authorization: Bearer <token>`. The gateway resolves the user by
+introspecting the token with the dashboard and never accepts a user id
+in the URL.
+
+These routes expose the current user's dashboard bucket namespace:
+
+- `GET /v1/me/buckets`
+- `GET /v1/me/buckets/deleted`
+- `GET /v1/me/buckets/:bucket`
+- `GET /v1/me/buckets/:bucket/events`
+- `POST /v1/me/buckets/:bucket/events`
+- `GET /v1/me/events`
+- `DELETE /v1/me/buckets/:bucket?mode=nuke`
+
+The response bodies match the former machine-authenticated
+`/internal/users/{user_id}/*` dashboard shapes, with bucket names
+rewritten to user-facing names. `/internal/*` remains available for
+operator and admin tooling.
+
+### 7.3 Peer Protocols
 
 Peer-to-peer communication does not use HTTP — it runs over libp2p transports (§12). The following protocols are defined on top of libp2p request-response, in addition to the gossipsub topic `shardd/events/v1` for event dissemination (§12.2):
 

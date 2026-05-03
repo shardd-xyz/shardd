@@ -16,12 +16,23 @@ import {
 import {
   AccountDetail,
   Balances,
+  BucketDeleteMode,
   CreateEventBody,
   CreateEventOptions,
   CreateEventResult,
+  CreateMyEventBody,
+  DeleteBucketResult,
+  DeletedBucketsList,
   EdgeHealth,
   EdgeInfo,
   EventList,
+  ListMyBucketEventsOptions,
+  ListMyBucketsOptions,
+  ListMyEventsOptions,
+  MyBucketDetail,
+  MyBucketEventsList,
+  MyBucketsList,
+  MyEventsList,
   Reservation,
 } from "./types.js";
 
@@ -32,6 +43,8 @@ export interface ClientOptions {
   timeoutMs?: number;
   /** Plug in a custom fetch (e.g. an instrumented wrapper). */
   fetch?: typeof fetch;
+  /** @internal Reuse an existing selector — used by `withApiKey`. */
+  _selector?: EdgeSelector;
 }
 
 /** Thread-safe handle to the shardd API.
@@ -55,7 +68,23 @@ export class Client {
     this.apiKey = apiKey;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.fetchImpl = opts.fetch ?? fetch.bind(globalThis);
-    this.selector = new EdgeSelector(opts.edges ?? DEFAULT_EDGES);
+    this.selector = opts._selector ?? new EdgeSelector(opts.edges ?? DEFAULT_EDGES);
+  }
+
+  /**
+   * Clone this client while replacing only the bearer token. The HTTP
+   * impl and edge selector are shared, so callers can mint short-lived
+   * tokens without losing failover state.
+   */
+  withApiKey(apiKey: string): Client {
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error("api_key is required");
+    }
+    return new Client(apiKey, {
+      timeoutMs: this.timeoutMs,
+      fetch: this.fetchImpl,
+      _selector: this.selector,
+    });
   }
 
   /**
@@ -213,6 +242,100 @@ export class Client {
     return dir.edges;
   }
 
+  // ── /v1/me/* (dashboard-namespaced) ─────────────────────────────
+
+  /** List the current user's buckets. */
+  async listMyBuckets(opts: ListMyBucketsOptions = {}): Promise<MyBucketsList> {
+    return this.request<MyBucketsList>("GET", "/v1/me/buckets", {
+      query: { page: opts.page, limit: opts.limit, q: opts.q },
+    });
+  }
+
+  /** List the current user's tombstoned (deleted) buckets. */
+  async listMyDeletedBuckets(): Promise<DeletedBucketsList> {
+    return this.request<DeletedBucketsList>("GET", "/v1/me/buckets/deleted");
+  }
+
+  /** Get one bucket plus its per-account rollup. */
+  async getMyBucket(bucket: string): Promise<MyBucketDetail> {
+    return this.request<MyBucketDetail>(
+      "GET",
+      `/v1/me/buckets/${encodeURIComponent(bucket)}`,
+    );
+  }
+
+  /** Paginated event list for one of the current user's buckets. */
+  async listMyBucketEvents(
+    bucket: string,
+    opts: ListMyBucketEventsOptions = {},
+  ): Promise<MyBucketEventsList> {
+    return this.request<MyBucketEventsList>(
+      "GET",
+      `/v1/me/buckets/${encodeURIComponent(bucket)}/events`,
+      {
+        query: {
+          q: opts.q,
+          account: opts.account,
+          page: opts.page,
+          limit: opts.limit,
+        },
+      },
+    );
+  }
+
+  /** Create an event in one of the current user's buckets. */
+  async createMyBucketEvent(
+    bucket: string,
+    body: CreateMyEventBody,
+  ): Promise<CreateEventResult> {
+    const result = await this.createMyBucketEventWithStatus(bucket, body);
+    return result.body;
+  }
+
+  /** Same as `createMyBucketEvent` but also returns the HTTP status —
+   *  useful for distinguishing 200 (idempotent retry) from 201. */
+  async createMyBucketEventWithStatus(
+    bucket: string,
+    body: CreateMyEventBody,
+  ): Promise<{ status: number; body: CreateEventResult }> {
+    return this.request<CreateEventResult>(
+      "POST",
+      `/v1/me/buckets/${encodeURIComponent(bucket)}/events`,
+      { body: JSON.stringify(body), returnStatus: true },
+    );
+  }
+
+  /** Cross-bucket event search across the current user's namespace. */
+  async listMyEvents(opts: ListMyEventsOptions = {}): Promise<MyEventsList> {
+    return this.request<MyEventsList>("GET", "/v1/me/events", {
+      query: {
+        bucket: opts.bucket,
+        account: opts.account,
+        origin: opts.origin,
+        event_type: opts.event_type,
+        since_ms: opts.since_ms,
+        until_ms: opts.until_ms,
+        search: opts.search,
+        limit: opts.limit,
+        offset: opts.offset,
+        replication: opts.replication,
+      },
+    });
+  }
+
+  /** Delete one of the current user's buckets. Currently `mode` must
+   *  be `"nuke"` — purges the bucket and its events. */
+  async deleteMyBucket(
+    bucket: string,
+    mode: BucketDeleteMode = "nuke",
+  ): Promise<DeleteBucketResult> {
+    return this.request<DeleteBucketResult>(
+      "DELETE",
+      `/v1/me/buckets/${encodeURIComponent(bucket)}`,
+      { query: { mode } },
+    );
+  }
+
   /** Health of a specific edge, or the currently-pinned one. */
   async health(baseUrl?: string): Promise<EdgeHealth> {
     const target = baseUrl ?? (await this.pickEdge());
@@ -241,10 +364,32 @@ export class Client {
   }
 
   private async request<R>(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
-    opts: { body?: string; query?: Record<string, string> } = {},
-  ): Promise<R> {
+    opts?: {
+      body?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      returnStatus?: false;
+    },
+  ): Promise<R>;
+  private async request<R>(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    opts: {
+      body?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      returnStatus: true;
+    },
+  ): Promise<{ status: number; body: R }>;
+  private async request<R>(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    opts: {
+      body?: string;
+      query?: Record<string, string | number | boolean | undefined>;
+      returnStatus?: boolean;
+    } = {},
+  ): Promise<R | { status: number; body: R }> {
     await this.ensureProbed();
     let urls = this.selector.liveUrls();
     if (urls.length === 0) {
@@ -255,10 +400,17 @@ export class Client {
       throw new ServiceUnavailableError("all edges unhealthy");
     }
 
-    const query = opts.query
-      ? "?" +
-        new URLSearchParams(opts.query as Record<string, string>).toString()
-      : "";
+    let query = "";
+    if (opts.query) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(opts.query)) {
+        if (v !== undefined) {
+          params.append(k, String(v));
+        }
+      }
+      const qs = params.toString();
+      if (qs) query = "?" + qs;
+    }
 
     // Try candidates in priority order, capped at 3 (matches our
     // current prod topology). Prevents a request from fanning out to
@@ -281,7 +433,11 @@ export class Client {
         clearTimeout(timer);
         if (resp.ok) {
           this.selector.markSuccess(base);
-          return (await resp.json()) as R;
+          const body = (await resp.json()) as R;
+          if (opts.returnStatus) {
+            return { status: resp.status, body };
+          }
+          return body;
         }
         const text = await resp.text();
         let body: unknown = undefined;

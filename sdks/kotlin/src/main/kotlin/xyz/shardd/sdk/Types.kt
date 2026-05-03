@@ -102,6 +102,89 @@ internal data class EdgeDirectoryResponse(
     val edges: List<EdgeInfo>,
 )
 
+data class MyBucketSummary(
+    val bucket: String,
+    val totalBalance: Long,
+    val availableBalance: Long,
+    val activeHoldTotal: Long,
+    val accountCount: Int,
+    val eventCount: Int,
+    val lastEventAtUnixMs: Long? = null,
+)
+
+data class MyBucketsList(
+    val buckets: List<MyBucketSummary>,
+    val total: Int,
+    val page: Int,
+    val limit: Int,
+)
+
+data class MyBucketAccountSummary(
+    val account: String,
+    val balance: Long,
+    val availableBalance: Long,
+    val activeHoldTotal: Long,
+    val eventCount: Int,
+    val lastEventAtUnixMs: Long? = null,
+)
+
+data class MyBucketDetail(
+    val summary: MyBucketSummary,
+    val accounts: List<MyBucketAccountSummary>,
+)
+
+data class DeletedBucket(
+    val name: String,
+    val deletedAtUnixMs: Long,
+)
+
+data class DeletedBucketsList(
+    val buckets: List<DeletedBucket> = emptyList(),
+)
+
+data class MyBucketEventsList(
+    val events: List<Event>,
+    val total: Int,
+    val page: Int,
+    val limit: Int,
+)
+
+data class MyEventsList(
+    val events: List<Event>,
+    val total: Long,
+    val limit: Int,
+    val offset: Int,
+    val heads: Map<String, Long> = emptyMap(),
+    val maxKnownSeqs: Map<String, Long> = emptyMap(),
+    val replication: Any? = null,
+)
+
+data class DeleteBucketResult(
+    val eventId: String,
+    val bucket: String,
+)
+
+enum class BucketDeleteMode(
+    val wire: String,
+) {
+    NUKE("nuke"),
+}
+
+data class CreateMyEventBody(
+    val account: String,
+    val amount: Long,
+    val note: String? = null,
+    val idempotencyNonce: String? = null,
+    val maxOverdraft: Long? = null,
+    val minAcks: Int? = null,
+    val ackTimeoutMs: Long? = null,
+    val holdAmount: Long? = null,
+    val holdExpiresAtUnixMs: Long? = null,
+    val settleReservation: String? = null,
+    val releaseReservation: String? = null,
+    val skipHold: Boolean? = null,
+)
+
 internal data class CreateEventBody(
     val bucket: String,
     val account: String,

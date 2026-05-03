@@ -35,10 +35,19 @@ from .types import (
     AckInfo,
     Balances,
     CreateEventResult,
+    DeleteBucketResult,
+    DeletedBucket,
+    DeletedBucketsList,
     EdgeHealth,
     EdgeInfo,
     Event,
     EventList,
+    MyBucketAccountSummary,
+    MyBucketDetail,
+    MyBucketEventsList,
+    MyBucketSummary,
+    MyBucketsList,
+    MyEventsList,
     Reservation,
 )
 
@@ -67,7 +76,16 @@ __all__ = [
     "EdgeInfo",
     "Event",
     "EventList",
+    "MyBucketAccountSummary",
+    "MyBucketDetail",
+    "MyBucketEventsList",
+    "MyBucketSummary",
+    "MyBucketsList",
+    "MyEventsList",
+    "DeletedBucket",
+    "DeletedBucketsList",
+    "DeleteBucketResult",
     "Reservation",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

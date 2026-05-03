@@ -28,6 +28,17 @@ pub async fn init_app_state() -> anyhow::Result<AppState> {
         .pool_idle_timeout(std::time::Duration::from_secs(10))
         .tcp_keepalive(std::time::Duration::from_secs(20))
         .build()?;
+    let shardd_client = shardd::Client::builder()
+        .api_key("dashboard-session-placeholder".to_string())
+        .edges(
+            config
+                .public_edges
+                .iter()
+                .map(|edge| edge.base_url.clone())
+                .collect(),
+        )
+        .http(edge_http.clone())
+        .build()?;
 
     let postgres_arc = Arc::new(postgres_persistence(&config.database_url).await?);
 
@@ -76,6 +87,7 @@ pub async fn init_app_state() -> anyhow::Result<AppState> {
     Ok(AppState {
         config: Arc::new(config),
         edge_http,
+        shardd_client,
         auth_use_cases: Arc::new(auth_use_cases),
         developer_auth_use_cases,
         cli_auth_use_cases,

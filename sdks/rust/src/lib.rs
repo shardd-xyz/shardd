@@ -51,6 +51,8 @@ mod types;
 pub use client::{Client, ClientBuilder};
 pub use error::ShardError;
 pub use types::{
-    AccountBalance, AccountDetail, AckInfo, Balances, CreateEventOptions, CreateEventResult,
-    EdgeHealth, EdgeInfo, Event, EventList, Reservation,
+    AccountBalance, AccountDetail, AckInfo, Balances, BucketDeleteMode, CreateEventOptions,
+    CreateEventResult, CreateMyEventBody, DeleteBucketResult, DeletedBucket, DeletedBucketsList,
+    EdgeHealth, EdgeInfo, Event, EventList, MyBucketAccountSummary, MyBucketDetail,
+    MyBucketEventsList, MyBucketSummary, MyBucketsList, MyEventsList, Reservation,
 };

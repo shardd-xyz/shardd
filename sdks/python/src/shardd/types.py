@@ -142,6 +142,158 @@ class EventList:
 
 
 @dataclass
+class MyBucketSummary:
+    bucket: str
+    total_balance: int
+    available_balance: int
+    active_hold_total: int
+    account_count: int
+    event_count: int
+    last_event_at_unix_ms: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyBucketSummary":
+        return cls(
+            bucket=d["bucket"],
+            total_balance=int(d["total_balance"]),
+            available_balance=int(d["available_balance"]),
+            active_hold_total=int(d["active_hold_total"]),
+            account_count=int(d["account_count"]),
+            event_count=int(d["event_count"]),
+            last_event_at_unix_ms=d.get("last_event_at_unix_ms"),
+        )
+
+
+@dataclass
+class MyBucketsList:
+    buckets: list[MyBucketSummary]
+    total: int
+    page: int
+    limit: int
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyBucketsList":
+        return cls(
+            buckets=[MyBucketSummary.from_dict(x) for x in d.get("buckets", [])],
+            total=int(d.get("total", 0)),
+            page=int(d.get("page", 1)),
+            limit=int(d.get("limit", 0)),
+        )
+
+
+@dataclass
+class MyBucketAccountSummary:
+    account: str
+    balance: int
+    available_balance: int
+    active_hold_total: int
+    event_count: int
+    last_event_at_unix_ms: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyBucketAccountSummary":
+        return cls(
+            account=d["account"],
+            balance=int(d["balance"]),
+            available_balance=int(d["available_balance"]),
+            active_hold_total=int(d["active_hold_total"]),
+            event_count=int(d["event_count"]),
+            last_event_at_unix_ms=d.get("last_event_at_unix_ms"),
+        )
+
+
+@dataclass
+class MyBucketDetail:
+    summary: MyBucketSummary
+    accounts: list[MyBucketAccountSummary]
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyBucketDetail":
+        return cls(
+            summary=MyBucketSummary.from_dict(d["summary"]),
+            accounts=[
+                MyBucketAccountSummary.from_dict(x) for x in d.get("accounts", [])
+            ],
+        )
+
+
+@dataclass
+class DeletedBucket:
+    name: str
+    deleted_at_unix_ms: int
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DeletedBucket":
+        return cls(
+            name=d["name"],
+            deleted_at_unix_ms=int(d["deleted_at_unix_ms"]),
+        )
+
+
+@dataclass
+class DeletedBucketsList:
+    buckets: list[DeletedBucket] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DeletedBucketsList":
+        return cls(
+            buckets=[DeletedBucket.from_dict(x) for x in d.get("buckets", [])],
+        )
+
+
+@dataclass
+class MyBucketEventsList:
+    events: list[Event]
+    total: int
+    page: int
+    limit: int
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyBucketEventsList":
+        return cls(
+            events=[Event.from_dict(x) for x in d.get("events", [])],
+            total=int(d.get("total", 0)),
+            page=int(d.get("page", 1)),
+            limit=int(d.get("limit", 0)),
+        )
+
+
+@dataclass
+class MyEventsList:
+    events: list[Event]
+    total: int
+    limit: int
+    offset: int
+    heads: dict[str, int] = field(default_factory=dict)
+    max_known_seqs: dict[str, int] = field(default_factory=dict)
+    replication: Optional[Any] = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MyEventsList":
+        return cls(
+            events=[Event.from_dict(x) for x in d.get("events", [])],
+            total=int(d.get("total", 0)),
+            limit=int(d.get("limit", 0)),
+            offset=int(d.get("offset", 0)),
+            heads={k: int(v) for k, v in (d.get("heads") or {}).items()},
+            max_known_seqs={
+                k: int(v) for k, v in (d.get("max_known_seqs") or {}).items()
+            },
+            replication=d.get("replication"),
+        )
+
+
+@dataclass
+class DeleteBucketResult:
+    event_id: str
+    bucket: str
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DeleteBucketResult":
+        return cls(event_id=d["event_id"], bucket=d["bucket"])
+
+
+@dataclass
 class EdgeInfo:
     edge_id: str
     region: str

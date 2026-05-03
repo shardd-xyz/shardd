@@ -14,7 +14,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
 private const val DEFAULT_TIMEOUT_MS = 30_000L
-private const val SDK_VERSION = "0.1.0"
+private const val SDK_VERSION = "0.2.0"
 
 data class ClientOptions(
     val edges: List<String> = DEFAULT_EDGES,
@@ -73,6 +73,16 @@ class Client private constructor(
             transport = transport,
             selector = EdgeSelector(options.edges),
         )
+
+    /**
+     * Clone this client while replacing only the bearer token. The
+     * transport and edge selector are shared, so callers can mint
+     * short-lived tokens without losing failover state.
+     */
+    fun withApiKey(apiKey: String): Client {
+        require(apiKey.isNotBlank()) { "apiKey is required" }
+        return Client(apiKey, options, transport, selector)
+    }
 
     @JvmOverloads
     fun createEvent(
@@ -201,6 +211,94 @@ class Client private constructor(
         val path = "/collapsed/${urlencode(bucket)}/${urlencode(account)}"
         return request("GET", path)
     }
+
+    // ── /v1/me/* (dashboard-namespaced) ─────────────────────────────
+
+    @JvmOverloads
+    fun listMyBuckets(
+        page: Int? = null,
+        limit: Int? = null,
+        q: String? = null,
+    ): MyBucketsList {
+        val query =
+            buildMap<String, String> {
+                if (page != null) put("page", page.toString())
+                if (limit != null) put("limit", limit.toString())
+                if (q != null) put("q", q)
+            }
+        return request("GET", "/v1/me/buckets", query = query)
+    }
+
+    fun listMyDeletedBuckets(): DeletedBucketsList = request("GET", "/v1/me/buckets/deleted")
+
+    fun getMyBucket(bucket: String): MyBucketDetail = request("GET", "/v1/me/buckets/${urlencode(bucket)}")
+
+    @JvmOverloads
+    fun listMyBucketEvents(
+        bucket: String,
+        q: String? = null,
+        account: String? = null,
+        page: Int? = null,
+        limit: Int? = null,
+    ): MyBucketEventsList {
+        val query =
+            buildMap<String, String> {
+                if (q != null) put("q", q)
+                if (account != null) put("account", account)
+                if (page != null) put("page", page.toString())
+                if (limit != null) put("limit", limit.toString())
+            }
+        return request(
+            "GET",
+            "/v1/me/buckets/${urlencode(bucket)}/events",
+            query = query,
+        )
+    }
+
+    fun createMyBucketEvent(
+        bucket: String,
+        body: CreateMyEventBody,
+    ): CreateEventResult = request("POST", "/v1/me/buckets/${urlencode(bucket)}/events", body = body)
+
+    @JvmOverloads
+    fun listMyEvents(
+        bucket: String? = null,
+        account: String? = null,
+        origin: String? = null,
+        eventType: String? = null,
+        sinceMs: Long? = null,
+        untilMs: Long? = null,
+        search: String? = null,
+        limit: Int? = null,
+        offset: Int? = null,
+        replication: Boolean? = null,
+    ): MyEventsList {
+        val query =
+            buildMap<String, String> {
+                if (bucket != null) put("bucket", bucket)
+                if (account != null) put("account", account)
+                if (origin != null) put("origin", origin)
+                if (eventType != null) put("event_type", eventType)
+                if (sinceMs != null) put("since_ms", sinceMs.toString())
+                if (untilMs != null) put("until_ms", untilMs.toString())
+                if (search != null) put("search", search)
+                if (limit != null) put("limit", limit.toString())
+                if (offset != null) put("offset", offset.toString())
+                if (replication != null) put("replication", if (replication) "true" else "false")
+            }
+        return request("GET", "/v1/me/events", query = query)
+    }
+
+    @JvmOverloads
+    fun deleteMyBucket(
+        bucket: String,
+        mode: BucketDeleteMode = BucketDeleteMode.NUKE,
+    ): DeleteBucketResult =
+        request(
+            "DELETE",
+            "/v1/me/buckets/${urlencode(bucket)}",
+            query = mapOf("mode" to mode.wire),
+        )
 
     fun edges(): List<EdgeInfo> {
         ensureProbed()

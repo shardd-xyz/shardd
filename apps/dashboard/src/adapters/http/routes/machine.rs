@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     adapters::http::app_state::AppState,
     app_error::{AppError, AppResult},
+    application::dashboard_session,
     use_cases::developer_auth::{MachineAction, MachineAuthDecision},
 };
 
@@ -32,6 +33,32 @@ async fn introspect(
     Json(request): Json<MachineIntrospectRequest>,
 ) -> AppResult<Json<MachineIntrospectResponse>> {
     authorize_machine_caller(&state, &headers)?;
+    if dashboard_session::has_dashboard_session_kid(&request.api_key) {
+        let user_id =
+            dashboard_session::verify(&request.api_key, &state.config.dashboard_session_key)?;
+        let allowed = matches!(
+            request.action,
+            MachineAction::ReadOwnAccount | MachineAction::WriteOwnAccount
+        );
+        return Ok(Json(MachineIntrospectResponse {
+            decision: MachineAuthDecision {
+                valid: true,
+                allowed,
+                user_id: Some(user_id),
+                cache_ttl_ms: if allowed {
+                    state.config.machine_auth_positive_cache_ttl_ms
+                } else {
+                    0
+                },
+                denial_reason: if allowed {
+                    None
+                } else {
+                    Some("scope_denied".into())
+                },
+                matched_scope: None,
+            },
+        }));
+    }
     let decision = state
         .developer_auth_use_cases
         .introspect(&request.api_key, request.action, &request.bucket)
