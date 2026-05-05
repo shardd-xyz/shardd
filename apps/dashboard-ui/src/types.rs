@@ -379,12 +379,4 @@ pub struct AuditEntry {
 pub struct EvmBucketStatus {
     pub enabled: bool,
     pub paused: bool,
-    pub whitelist_enabled: bool,
-    pub addresses: Vec<WhitelistedAddress>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct WhitelistedAddress {
-    pub address: String,
-    pub added_at: String,
 }

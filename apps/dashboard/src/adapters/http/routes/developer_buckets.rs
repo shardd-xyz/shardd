@@ -17,8 +17,7 @@ use crate::{
     application::dashboard_session,
     infra::config::PublicEdgeConfig,
     use_cases::buckets_registry::{
-        BucketStatusFilter, EvmBucketStatus, OwnedBucket, WhitelistedAddress, validate_bucket_name,
-        validate_evm_address,
+        BucketStatusFilter, EvmBucketStatus, OwnedBucket, validate_bucket_name,
     },
 };
 
@@ -44,22 +43,6 @@ pub fn router() -> Router<AppState> {
         .route("/buckets/{bucket}/evm/disable", put(disable_evm))
         .route("/buckets/{bucket}/evm/pause", put(pause_evm))
         .route("/buckets/{bucket}/evm/resume", put(resume_evm))
-        .route(
-            "/buckets/{bucket}/evm/whitelist/enable",
-            put(enable_evm_whitelist),
-        )
-        .route(
-            "/buckets/{bucket}/evm/whitelist/disable",
-            put(disable_evm_whitelist),
-        )
-        .route(
-            "/buckets/{bucket}/evm/whitelist/addresses",
-            axum::routing::post(add_whitelist_address),
-        )
-        .route(
-            "/buckets/{bucket}/evm/whitelist/addresses/{address}",
-            axum::routing::delete(remove_whitelist_address),
-        )
 }
 #[derive(Debug, Deserialize)]
 struct PurgeBucketQuery {
@@ -719,24 +702,6 @@ pub(crate) fn path_with_query(path: &str, pairs: &[(&str, Option<&str>)]) -> Str
 
 // ── EVM routes ────────────────────────────────────────────────────
 
-async fn get_evm_status(
-    State(state): State<AppState>,
-    Authenticated(user): Authenticated,
-    Path(bucket): Path<String>,
-) -> AppResult<Json<EvmBucketStatus>> {
-    let status = state
-        .bucket_registry
-        .get_evm_status(user.id, &bucket)
-        .await?
-        .unwrap_or(EvmBucketStatus {
-            enabled: false,
-            paused: false,
-            whitelist_enabled: false,
-            addresses: vec![],
-        });
-    Ok(Json(status))
-}
-
 async fn enable_evm(
     State(state): State<AppState>,
     Authenticated(user): Authenticated,
@@ -773,6 +738,22 @@ async fn pause_evm(
     Ok(Json(json!({ "evm_paused": true })))
 }
 
+async fn get_evm_status(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<EvmBucketStatus>> {
+    let status = state
+        .bucket_registry
+        .get_evm_status(user.id, &bucket)
+        .await?
+        .unwrap_or(EvmBucketStatus {
+            enabled: false,
+            paused: false,
+        });
+    Ok(Json(status))
+}
+
 async fn resume_evm(
     State(state): State<AppState>,
     Authenticated(user): Authenticated,
@@ -783,60 +764,4 @@ async fn resume_evm(
         .set_evm_paused(user.id, &bucket, false)
         .await?;
     Ok(Json(json!({ "evm_paused": false })))
-}
-
-async fn enable_evm_whitelist(
-    State(state): State<AppState>,
-    Authenticated(user): Authenticated,
-    Path(bucket): Path<String>,
-) -> AppResult<Json<Value>> {
-    state
-        .bucket_registry
-        .set_evm_whitelist_enabled(user.id, &bucket, true)
-        .await?;
-    Ok(Json(json!({ "evm_whitelist_enabled": true })))
-}
-
-async fn disable_evm_whitelist(
-    State(state): State<AppState>,
-    Authenticated(user): Authenticated,
-    Path(bucket): Path<String>,
-) -> AppResult<Json<Value>> {
-    state
-        .bucket_registry
-        .set_evm_whitelist_enabled(user.id, &bucket, false)
-        .await?;
-    Ok(Json(json!({ "evm_whitelist_enabled": false })))
-}
-
-#[derive(Deserialize)]
-struct AddWhitelistAddressBody {
-    address: String,
-}
-
-async fn add_whitelist_address(
-    State(state): State<AppState>,
-    Authenticated(user): Authenticated,
-    Path(bucket): Path<String>,
-    Json(body): Json<AddWhitelistAddressBody>,
-) -> AppResult<Json<WhitelistedAddress>> {
-    let normalized = body.address.to_lowercase();
-    validate_evm_address(&normalized)?;
-    let entry = state
-        .bucket_registry
-        .add_whitelist_address(user.id, &bucket, &normalized)
-        .await?;
-    Ok(Json(entry))
-}
-
-async fn remove_whitelist_address(
-    State(state): State<AppState>,
-    Authenticated(user): Authenticated,
-    Path((bucket, address)): Path<(String, String)>,
-) -> AppResult<StatusCode> {
-    state
-        .bucket_registry
-        .remove_whitelist_address(user.id, &bucket, &address.to_lowercase())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
 }

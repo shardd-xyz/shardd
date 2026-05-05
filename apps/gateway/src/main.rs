@@ -76,6 +76,7 @@ pub(crate) struct AppState {
     mesh: Arc<MeshClient>,
     auth: Option<Arc<GatewayAuthClient>>,
     public_edges: Option<Arc<PublicEdgeDirectory>>,
+    pub(crate) evm_state: Option<Arc<DashMap<String, evm_rpc::BucketEvmState>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,10 +352,14 @@ async fn main() -> Result<()> {
     }
 
     let public_edges = build_public_edge_directory(&cli)?;
+    let evm_cache = auth
+        .as_ref()
+        .map(|_| Arc::new(DashMap::<String, evm_rpc::BucketEvmState>::new()));
     let state = AppState {
         mesh,
         auth,
         public_edges,
+        evm_state: evm_cache,
     };
     let app = build_app(state);
 
@@ -2712,6 +2717,7 @@ mod tests {
             mesh,
             auth: None,
             public_edges: None,
+            evm_state: None,
         }
     }
 

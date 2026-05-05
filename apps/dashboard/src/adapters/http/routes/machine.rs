@@ -1,7 +1,6 @@
 use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     adapters::http::app_state::AppState,
@@ -85,20 +84,17 @@ fn authorize_machine_caller(state: &AppState, headers: &HeaderMap) -> AppResult<
     Ok(())
 }
 
-// ── EVM whitelist check ──────────────────────────────────────────
+// ── EVM state check (called by gateway's cached check) ────────────
 
 #[derive(Deserialize)]
 struct EvmCheckRequest {
-    user_id: Uuid,
     bucket_name: String,
-    address: String,
-    action: String,
 }
 
 #[derive(Serialize)]
 struct EvmCheckResponse {
-    allowed: bool,
-    reason: Option<String>,
+    evm_enabled: bool,
+    evm_paused: bool,
 }
 
 async fn evm_check(
@@ -110,44 +106,15 @@ async fn evm_check(
 
     let status = state
         .bucket_registry
-        .get_evm_status(request.user_id, &request.bucket_name)
+        .get_evm_status_by_name(&request.bucket_name)
         .await?
         .unwrap_or(crate::use_cases::buckets_registry::EvmBucketStatus {
             enabled: false,
             paused: false,
-            whitelist_enabled: false,
-            addresses: vec![],
         });
 
-    if !status.enabled {
-        return Ok(Json(EvmCheckResponse {
-            allowed: false,
-            reason: Some("evm_not_enabled".into()),
-        }));
-    }
-
-    if request.action == "write" && status.paused {
-        return Ok(Json(EvmCheckResponse {
-            allowed: false,
-            reason: Some("bucket_paused".into()),
-        }));
-    }
-
-    if request.action == "write"
-        && status.whitelist_enabled
-        && !status
-            .addresses
-            .iter()
-            .any(|a| a.address == request.address.to_lowercase())
-    {
-        return Ok(Json(EvmCheckResponse {
-            allowed: false,
-            reason: Some("address_not_whitelisted".into()),
-        }));
-    }
-
     Ok(Json(EvmCheckResponse {
-        allowed: true,
-        reason: None,
+        evm_enabled: status.enabled,
+        evm_paused: status.paused,
     }))
 }

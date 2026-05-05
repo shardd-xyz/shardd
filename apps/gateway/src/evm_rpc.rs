@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use alloy_consensus::{TxLegacy, transaction::RlpEcdsaDecodableTx};
 use alloy_primitives::{B256, TxKind, U256, keccak256};
@@ -6,21 +8,17 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shardd_types::{CreateEventRequest, Event, NodeRpcRequest, NodeRpcResponse};
-use uuid::Uuid;
 
-use crate::{
-    AppState, AuthorizedBucket, GatewayMachineAction, bearer_token, forbidden,
-    gateway_unavailable_response, unauthorized,
-};
+use crate::AppState;
 
 // ── JSON-RPC wire types ─────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct EvmRpcRequest {
-    #[allow(dead_code)]
     jsonrpc: String,
     method: String,
     #[serde(default)]
@@ -44,19 +42,45 @@ struct EvmRpcErrorBody {
     message: String,
 }
 
-const EMPTY_BLOOM: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+/// Cached EVM status for a bucket. Refreshed from the dashboard
+/// periodically so the edge doesn't call the dashboard on every txn.
+#[derive(Clone, Debug)]
+pub(crate) struct BucketEvmState {
+    enabled: bool,
+    paused: bool,
+    refreshed_at: Instant,
+}
 
+impl BucketEvmState {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            paused: false,
+            refreshed_at: Instant::now(),
+        }
+    }
+    fn is_stale(&self, ttl: Duration) -> bool {
+        self.refreshed_at.elapsed() > ttl
+    }
+}
+
+const EMPTY_BLOOM: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 const ZERO_HASH: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO_ADDR: &str = "0x0000000000000000000000000000000000000000";
 const UNCLES_HASH: &str = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
+
+/// How long the edge caches a bucket's EVM state before re-querying
+/// the dashboard. The dashboard is only hit at most once per bucket
+/// per this interval, not per transaction.
+const EVM_STATE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 // ── Public handler ───────────────────────────────────────────────────
 
 pub async fn evm_rpc_handler(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
-    Query(query_params): Query<HashMap<String, String>>,
-    headers: HeaderMap,
+    Query(_query_params): Query<HashMap<String, String>>,
+    _headers: HeaderMap,
     body: String,
 ) -> Response {
     let req: EvmRpcRequest = match serde_json::from_str(&body) {
@@ -66,67 +90,36 @@ pub async fn evm_rpc_handler(
         }
     };
 
-    // Auth: extract API key from query param or Authorization header
-    let api_key = query_params
-        .get("api_key")
-        .map(|s| s.as_str())
-        .or_else(|| bearer_token(&headers));
+    if bucket == "*" {
+        return make_error(req.id, -32602, "wildcard not supported");
+    }
 
-    let needs_write = method_needs_write(&req.method);
-    let resolved_bucket = if bucket == "*" {
-        return make_error(
-            req.id,
-            -32602,
-            "wildcard bucket not supported; specify bucket in URL",
-        );
-    } else {
-        bucket
-    };
+    let needs_write = matches!(req.method.as_str(), "eth_sendRawTransaction");
 
-    // Authenticate if API key is provided (required for writes, optional for reads)
-    let user_id = if let Some(key) = api_key {
-        let action = if needs_write {
-            GatewayMachineAction::Write
-        } else {
-            GatewayMachineAction::Read
-        };
-        match authorize_evm_call(&state, key, action, &resolved_bucket).await {
-            Ok(auth) => Some(auth.user_id),
-            Err(resp) => return resp,
+    // For writes, ensure the bucket has EVM enabled (cached check,
+    // not a dashboard call on every request).
+    if needs_write {
+        if let Err(resp) = ensure_evm_ready(&state, &bucket).await {
+            return resp;
         }
-    } else if needs_write {
-        return make_error(req.id, -32000, "api_key required for write operations");
-    } else {
-        None
-    };
+    }
 
-    // Dispatch
     let result = match req.method.as_str() {
-        "eth_chainId" | "net_version" => eth_chain_id(&resolved_bucket),
+        "eth_chainId" | "net_version" => eth_chain_id(&bucket),
         "eth_accounts" => Ok(json!([])),
-        "eth_getBalance" => eth_get_balance(&state, &resolved_bucket, &req.params).await,
-        "eth_getTransactionCount" => {
-            eth_get_transaction_count(&state, &resolved_bucket, &req.params).await
-        }
-        "eth_sendRawTransaction" => {
-            let uid = match user_id {
-                Some(u) => u,
-                None => return make_error(req.id, -32000, "auth required"),
-            };
-            eth_send_raw_transaction(&state, &resolved_bucket, &uid, &req.params).await
-        }
+        "eth_getBalance" => eth_get_balance(&state, &bucket, &req.params).await,
+        "eth_getTransactionCount" => eth_get_transaction_count(&state, &bucket, &req.params).await,
+        "eth_sendRawTransaction" => eth_send_raw_transaction(&state, &bucket, &req.params).await,
         "eth_gasPrice" => Ok(json!("0x0")),
         "eth_estimateGas" => Ok(json!("0x5208")),
-        "eth_blockNumber" => eth_block_number(&state, &resolved_bucket).await,
-        "eth_getBlockByNumber" => {
-            eth_get_block_by_number(&state, &resolved_bucket, &req.params).await
-        }
-        "eth_getBlockByHash" => eth_get_block_by_hash(&state, &resolved_bucket, &req.params).await,
+        "eth_blockNumber" => eth_block_number(&state, &bucket).await,
+        "eth_getBlockByNumber" => eth_get_block_by_number(&state, &bucket, &req.params).await,
+        "eth_getBlockByHash" => eth_get_block_by_hash(&state, &bucket, &req.params).await,
         "eth_getTransactionByHash" => {
-            eth_get_transaction_by_hash(&state, &resolved_bucket, &req.params).await
+            eth_get_transaction_by_hash(&state, &bucket, &req.params).await
         }
         "eth_getTransactionReceipt" => {
-            eth_get_transaction_receipt(&state, &resolved_bucket, &req.params).await
+            eth_get_transaction_receipt(&state, &bucket, &req.params).await
         }
         "eth_call" => Err(evm_rpc_err(-32601, "smart contracts not supported")),
         "eth_getLogs" => Ok(json!([])),
@@ -142,45 +135,93 @@ pub async fn evm_rpc_handler(
     }
 }
 
-// ── Auth helpers ─────────────────────────────────────────────────────
+// ── Cached EVM state ─────────────────────────────────────────────────
 
-async fn authorize_evm_call(
-    state: &AppState,
-    api_key: &str,
-    action: GatewayMachineAction,
-    bucket: &str,
-) -> Result<AuthorizedBucket, Response> {
-    let Some(auth) = &state.auth else {
-        return Err(gateway_unavailable_response(
-            "dashboard auth is not configured".to_string(),
-        ));
+/// Returns Ok(()) if the bucket has EVM enabled and is not paused.
+/// Caches the dashboard response for EVM_STATE_CACHE_TTL.
+async fn ensure_evm_ready(state: &AppState, bucket: &str) -> Result<(), Response> {
+    let cache = state.evm_state.as_ref();
+    let Some(cache) = cache else {
+        // No dashboard URL configured — cannot verify EVM state.
+        // Allow writes (the dashboard is the source of truth; if it's
+        // unreachable we default to open).
+        return Ok(());
     };
-    let decision = auth
-        .authorize(api_key, action, bucket)
-        .await
-        .map_err(|e| gateway_unavailable_response(e.to_string()))?;
 
-    if decision.allowed {
-        let Some(user_id) = decision.user_id else {
-            return Err(gateway_unavailable_response(
-                "dashboard introspection returned no user id".to_string(),
-            ));
-        };
-        Ok(AuthorizedBucket { user_id })
-    } else {
-        let reason = decision
-            .denial_reason
-            .unwrap_or_else(|| "access_denied".to_string());
-        if decision.valid {
-            Err(forbidden(&reason))
-        } else {
-            Err(unauthorized(&reason))
+    // Fast path: cache hit and still fresh.
+    if let Some(ref entry) = cache.get(bucket) {
+        if !entry.is_stale(EVM_STATE_CACHE_TTL) {
+            if !entry.value().enabled {
+                return Err(make_error_with(
+                    null_value(),
+                    -32000,
+                    "EVM RPC not enabled for this bucket",
+                ));
+            }
+            if entry.value().paused {
+                return Err(make_error_with(null_value(), -32000, "bucket is paused"));
+            }
+            return Ok(());
         }
     }
+
+    // Slow path: refresh from dashboard (at most once per TTL).
+    let state_ref = fetch_evm_state(state, bucket).await;
+    cache.insert(bucket.to_string(), state_ref.clone());
+
+    if !state_ref.enabled {
+        return Err(make_error_with(
+            null_value(),
+            -32000,
+            "EVM RPC not enabled for this bucket",
+        ));
+    }
+    if state_ref.paused {
+        return Err(make_error_with(null_value(), -32000, "bucket is paused"));
+    }
+    Ok(())
 }
 
-fn method_needs_write(method: &str) -> bool {
-    matches!(method, "eth_sendRawTransaction" | "eth_sendTransaction")
+async fn fetch_evm_state(state: &AppState, bucket: &str) -> BucketEvmState {
+    let Some(auth) = &state.auth else {
+        return BucketEvmState::disabled();
+    };
+
+    let resp = match auth
+        .http
+        .post(format!("{}/api/machine/evm/check", auth.base_url))
+        .header("x-machine-auth-secret", &auth.shared_secret)
+        .json(&json!({
+            "bucket_name": bucket,
+            "address": "",
+            "action": "state",
+        }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return BucketEvmState::disabled(),
+    };
+
+    let body: Value = match resp.json().await {
+        Ok(b) => b,
+        Err(_) => return BucketEvmState::disabled(),
+    };
+
+    let enabled = body
+        .get("evm_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let paused = body
+        .get("evm_paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    BucketEvmState {
+        enabled,
+        paused,
+        refreshed_at: Instant::now(),
+    }
 }
 
 // ── Error helpers ────────────────────────────────────────────────────
@@ -207,6 +248,10 @@ fn make_ok(id: Value, result: Value) -> Response {
 }
 
 fn make_error(id: Value, code: i64, message: &str) -> Response {
+    make_error_with(id, code, message)
+}
+
+fn make_error_with(id: Value, code: i64, message: &str) -> Response {
     Json(EvmRpcResponse {
         jsonrpc: "2.0",
         result: None,
@@ -290,7 +335,6 @@ async fn eth_block_number(state: &AppState, bucket: &str) -> Result<Value, EvmRp
 async fn eth_send_raw_transaction(
     state: &AppState,
     bucket: &str,
-    user_id: &Uuid,
     params: &Option<Value>,
 ) -> Result<Value, EvmRpcErrorBody> {
     let raw_hex = extract_param_str(params, 0)?;
@@ -301,7 +345,7 @@ async fn eth_send_raw_transaction(
     let tx = TxLegacy::rlp_decode_signed(&mut &raw_bytes[..])
         .map_err(|e| evm_rpc_err(-32602, &format!("invalid transaction: {e}")))?;
 
-    // 2. Recover signer
+    // 2. Recover signer — the signature IS the auth
     let from = tx
         .recover_signer()
         .map_err(|_| evm_rpc_err(-32602, "signature recovery failed"))?;
@@ -336,9 +380,6 @@ async fn eth_send_raw_transaction(
     let value_i64: i64 = value
         .try_into()
         .map_err(|_| evm_rpc_err(-32000, "value exceeds i64 range"))?;
-
-    // 5a. Check EVM status (enabled, paused, whitelist) via dashboard
-    check_evm_write_allowed(state, user_id, bucket, &from_str).await?;
 
     // 6. Validate nonce (strict sequential)
     let current_nonce = get_nonce(state, bucket, &from_str).await?;
@@ -410,7 +451,6 @@ async fn eth_get_block_by_number(
     if events.is_empty() {
         return Ok(json!(null));
     }
-
     let block_num = if block_num_str == "latest" || block_num_str == "pending" {
         events.len().saturating_sub(1)
     } else if block_num_str == "earliest" {
@@ -419,11 +459,9 @@ async fn eth_get_block_by_number(
         let hex_str = block_num_str.trim_start_matches("0x");
         usize::from_str_radix(hex_str, 16).unwrap_or(0)
     };
-
     if block_num >= events.len() {
         return Ok(json!(null));
     }
-
     build_block_response(&events, block_num)
 }
 
@@ -434,10 +472,6 @@ async fn eth_get_block_by_hash(
 ) -> Result<Value, EvmRpcErrorBody> {
     let hash_str = extract_param_str(params, 0)?;
     let events = get_bucket_events_sorted(state, bucket).await?;
-    if events.is_empty() {
-        return Ok(json!(null));
-    }
-
     for (idx, event) in events.iter().enumerate() {
         let bh = block_hash_for_event(event);
         if format!("0x{:x}", bh) == hash_str.to_lowercase() {
@@ -454,7 +488,6 @@ async fn eth_get_transaction_by_hash(
 ) -> Result<Value, EvmRpcErrorBody> {
     let tx_hash_str = extract_param_str(params, 0)?;
     let events = get_bucket_events_sorted(state, bucket).await?;
-
     for (idx, event) in events.iter().enumerate() {
         let event_tx_hash = extract_tx_hash_from_event(event);
         let synthetic = keccak256(event.event_id.as_bytes());
@@ -474,7 +507,6 @@ async fn eth_get_transaction_receipt(
 ) -> Result<Value, EvmRpcErrorBody> {
     let tx_hash_str = extract_param_str(params, 0)?;
     let events = get_bucket_events_sorted(state, bucket).await?;
-
     for (idx, event) in events.iter().enumerate() {
         let event_tx_hash = extract_tx_hash_from_event(event);
         let synthetic = keccak256(event.event_id.as_bytes());
@@ -667,49 +699,4 @@ async fn get_nonce(state: &AppState, bucket: &str, address: &str) -> Result<u64,
         .filter(|e| e.account.to_lowercase() == address.to_lowercase() && e.amount < 0)
         .count() as u64;
     Ok(nonce)
-}
-
-async fn check_evm_write_allowed(
-    state: &AppState,
-    user_id: &Uuid,
-    bucket: &str,
-    from_address: &str,
-) -> Result<(), EvmRpcErrorBody> {
-    let Some(auth) = &state.auth else {
-        return Err(evm_rpc_err(-32000, "auth not configured"));
-    };
-
-    let resp = auth
-        .http
-        .post(format!("{}/api/machine/evm/check", auth.base_url))
-        .header("x-machine-auth-secret", &auth.shared_secret)
-        .json(&json!({
-            "user_id": user_id.to_string(),
-            "bucket_name": bucket,
-            "address": from_address.to_lowercase(),
-            "action": "write",
-        }))
-        .send()
-        .await
-        .map_err(|e| evm_rpc_err(-32000, &format!("evm check failed: {e}")))?;
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| evm_rpc_err(-32000, &format!("evm check response error: {e}")))?;
-
-    let allowed = body
-        .get("allowed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if !allowed {
-        let reason = body
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("access denied");
-        return Err(evm_rpc_err(-32000, &format!("access denied: {reason}")));
-    }
-
-    Ok(())
 }
