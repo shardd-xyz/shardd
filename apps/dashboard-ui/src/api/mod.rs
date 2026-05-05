@@ -269,3 +269,48 @@ pub async fn api_delete(path: &str) -> Result<(), ApiError> {
 
     Ok(())
 }
+
+pub async fn api_put<T: DeserializeOwned>(
+    path: &str,
+    body: &impl serde::Serialize,
+) -> Result<T, ApiError> {
+    let response = Request::put(path)
+        .credentials(RequestCredentials::Include)
+        .json(body)
+        .map_err(transport_err)?
+        .send()
+        .await
+        .map_err(transport_err)?;
+
+    if !response.ok() {
+        let status = response.status();
+        return Err(parse_api_error(
+            status,
+            response.text().await.unwrap_or_default(),
+        ));
+    }
+
+    let status = response.status();
+    response
+        .json::<T>()
+        .await
+        .map_err(|e| decode_err(status, e))
+}
+
+pub async fn api_put_no_body(path: &str) -> Result<(), ApiError> {
+    let response = Request::put(path)
+        .credentials(RequestCredentials::Include)
+        .send()
+        .await
+        .map_err(transport_err)?;
+
+    if !response.ok() {
+        let status = response.status();
+        return Err(parse_api_error(
+            status,
+            response.text().await.unwrap_or_default(),
+        ));
+    }
+
+    Ok(())
+}

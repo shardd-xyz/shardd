@@ -145,6 +145,7 @@ fn create_event_request(bucket: &str, account: &str, amount: i64) -> CreateEvent
         release_reservation: None,
         skip_hold: None,
         allow_reserved_bucket: false,
+        transfer_to: None,
     }
 }
 

@@ -5,6 +5,7 @@ use crate::components::event_card::EventCard;
 use crate::components::meta_row::{MetaRow, MetaRowCode};
 use crate::components::pagination::Pagination;
 use crate::components::time::*;
+use crate::pages::evm_settings::EvmSettings;
 use crate::router::Route;
 use crate::state::use_notice;
 use crate::types::{CreateEventRequest, Notice, NoticeTone};
@@ -74,9 +75,17 @@ pub fn BucketDetail(bucket: String) -> Element {
                         onclick: move |_| tab.set("accounts".to_string()),
                         "Accounts"
                     }
+                    button {
+                        class: if *tab.read() == "evm" { "px-3.5 py-2 rounded-full text-sm text-fg bg-base-900 border border-base-700" } else { "px-3.5 py-2 rounded-full text-sm text-base-500 border border-transparent hover:text-fg" },
+                        onclick: move |_| tab.set("evm".to_string()),
+                        "EVM"
+                    }
                 }
 
-                if *tab.read() == "events" {
+                if *tab.read() == "evm" {
+                    EvmSettings { bucket: bucket.clone() }
+                } else {
+                    if *tab.read() == "events" {
                     // Events panel
                     section { class: "rounded-lg border border-base-800 bg-base-900 p-6 grid gap-5",
                         div { class: "flex justify-between items-start",
@@ -175,6 +184,7 @@ pub fn BucketDetail(bucket: String) -> Element {
                             _ => rsx! { div { class: "text-base-500 text-center py-8", "Loading…" } },
                         }
                     }
+                }
                 }
             }
 

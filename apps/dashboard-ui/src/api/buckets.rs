@@ -1,4 +1,4 @@
-use crate::api::{ApiError, api_delete, api_get, api_post};
+use crate::api::{ApiError, api_delete, api_get, api_post, api_put, api_put_no_body};
 use crate::types::*;
 use serde::Serialize;
 
@@ -94,6 +94,93 @@ pub async fn purge_bucket(bucket: &str) -> Result<(), ApiError> {
         "/api/developer/buckets/{}/purge?confirm={}",
         urlencoding::encode(bucket),
         urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+// ── EVM settings ────────────────────────────────────────────────
+
+pub async fn get_evm_status(bucket: &str) -> Result<EvmBucketStatus, ApiError> {
+    api_get(&format!(
+        "/api/developer/buckets/{}/evm",
+        urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+pub async fn enable_evm(bucket: &str) -> Result<serde_json::Value, ApiError> {
+    api_put(
+        &format!(
+            "/api/developer/buckets/{}/evm/enable",
+            urlencoding::encode(bucket)
+        ),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn disable_evm(bucket: &str) -> Result<serde_json::Value, ApiError> {
+    api_put(
+        &format!(
+            "/api/developer/buckets/{}/evm/disable",
+            urlencoding::encode(bucket)
+        ),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn pause_evm(bucket: &str) -> Result<(), ApiError> {
+    api_put_no_body(&format!(
+        "/api/developer/buckets/{}/evm/pause",
+        urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+pub async fn resume_evm(bucket: &str) -> Result<(), ApiError> {
+    api_put_no_body(&format!(
+        "/api/developer/buckets/{}/evm/resume",
+        urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+pub async fn enable_evm_whitelist(bucket: &str) -> Result<(), ApiError> {
+    api_put_no_body(&format!(
+        "/api/developer/buckets/{}/evm/whitelist/enable",
+        urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+pub async fn disable_evm_whitelist(bucket: &str) -> Result<(), ApiError> {
+    api_put_no_body(&format!(
+        "/api/developer/buckets/{}/evm/whitelist/disable",
+        urlencoding::encode(bucket)
+    ))
+    .await
+}
+
+pub async fn add_whitelist_address(
+    bucket: &str,
+    address: &str,
+) -> Result<serde_json::Value, ApiError> {
+    api_post(
+        &format!(
+            "/api/developer/buckets/{}/evm/whitelist/addresses",
+            urlencoding::encode(bucket)
+        ),
+        &serde_json::json!({ "address": address }),
+    )
+    .await
+}
+
+pub async fn remove_whitelist_address(bucket: &str, address: &str) -> Result<(), ApiError> {
+    api_delete(&format!(
+        "/api/developer/buckets/{}/evm/whitelist/addresses/{}",
+        urlencoding::encode(bucket),
+        urlencoding::encode(address)
     ))
     .await
 }

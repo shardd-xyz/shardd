@@ -98,6 +98,8 @@ pub struct Event {
     pub hold_amount: u64,
     #[serde(default)]
     pub hold_expires_at_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_to: Option<String>,
 }
 
 fn default_epoch() -> u32 {
@@ -415,6 +417,8 @@ pub struct CreateEventRequest {
     /// routes don't deserialize it from the wire payload.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub allow_reserved_bucket: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -837,6 +841,8 @@ mod tests {
             void_ref: None,
             hold_amount: 1000,
             hold_expires_at_unix_ms: 2000,
+
+            transfer_to: None,
         };
 
         assert_eq!(
@@ -894,6 +900,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         assert_eq!(delete_meta.meta_target_bucket(), Some("orders"));
 
@@ -961,6 +969,8 @@ mod tests {
             void_ref: Some("ref1".into()),
             hold_amount: 100,
             hold_expires_at_unix_ms: 9999,
+
+            transfer_to: None,
         };
 
         assert_eq!(
@@ -986,6 +996,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         assert_eq!(event.canonical(), "n1:1:1:eid:standard:b:a:100::n:0:0");
@@ -1016,6 +1028,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         let key = event.idempotency_key();
@@ -1039,6 +1053,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         let b = Event {
@@ -1070,6 +1086,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         let b = Event {
@@ -1223,6 +1241,8 @@ mod tests {
             void_ref: None,
             hold_amount: 500,
             hold_expires_at_unix_ms: 9999,
+
+            transfer_to: None,
         };
         assert!(reservation.has_hold());
 

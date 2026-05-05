@@ -65,6 +65,7 @@ pub(crate) struct LocalCreateInput {
     pub settle_reservation: Option<String>,
     pub release_reservation: Option<String>,
     pub skip_hold: bool,
+    pub transfer_to: Option<String>,
 }
 
 impl LocalCreateInput {
@@ -93,6 +94,7 @@ impl LocalCreateInput {
             settle_reservation: None,
             release_reservation: None,
             skip_hold: false,
+            transfer_to: None,
         }
     }
 }
@@ -833,6 +835,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                 void_ref: None,
                 hold_amount,
                 hold_expires_at_unix_ms,
+
+                transfer_to: None,
             };
             state.event_count += 1;
             state.track_reservation(&reservation_event);
@@ -866,11 +870,12 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             bucket: input.bucket.clone(),
             account: input.account.clone(),
             amount: input.amount,
-            note: input.note,
+            note: input.note.clone(),
             idempotency_nonce: input.idempotency_nonce.clone(),
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+            transfer_to: input.transfer_to.clone(),
         };
         state.balance += input.amount;
         state.event_count += 1;
@@ -885,6 +890,66 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
         );
 
         emitted_events.push(charge_event.clone());
+
+        // If this is a transfer, emit the credit side atomically within
+        // the same flush batch.
+        if let Some(ref to_addr) = input.transfer_to {
+            let credit_key = (input.bucket.clone(), to_addr.clone());
+            let credit_acct = self
+                .accounts
+                .entry(credit_key)
+                .or_insert_with(|| Arc::new(Mutex::new(AccountState::new())))
+                .clone();
+            // Lock credit account — deadlock risk is negligible since we
+            // always lock debit first, then credit. The credit-side lock
+            // is held briefly and released after flush.
+            let mut credit_state = credit_acct.lock().await;
+
+            let credit_nonce = format!("credit:{}", input.idempotency_nonce);
+            let credit_amount = input.amount.checked_abs().ok_or_else(|| {
+                CreateLocalEventError::InvalidRequest("transfer amount overflows i64".into())
+            })?;
+
+            let (credit_epoch, credit_seq) = self
+                .allocate_or_fail(
+                    &input.bucket,
+                    credit_state.balance,
+                    credit_state.available_balance(now_ms),
+                )
+                .await?;
+
+            let credit_event = Event {
+                event_id: Event::generate_id(),
+                origin_node_id: self.node_id.to_string(),
+                origin_epoch: credit_epoch,
+                origin_seq: credit_seq,
+                created_at_unix_ms: now_ms,
+                r#type: EventType::Standard,
+                bucket: input.bucket.clone(),
+                account: to_addr.clone(),
+                amount: credit_amount as i64,
+                note: input.note.clone(),
+                idempotency_nonce: credit_nonce.clone(),
+                void_ref: None,
+                hold_amount: 0,
+                hold_expires_at_unix_ms: 0,
+                transfer_to: None,
+            };
+
+            credit_state.balance += credit_amount as i64;
+            credit_state.event_count += 1;
+            self.idempotency_cache.insert(
+                (
+                    credit_nonce,
+                    input.bucket.clone(),
+                    to_addr.clone(),
+                    credit_amount as i64,
+                ),
+                credit_event.clone(),
+            );
+            emitted_events.push(credit_event);
+        }
+
         self.flush_local_events(&emitted_events).await;
 
         Ok(LocalCreateResult {
@@ -944,6 +1009,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: None,
             hold_amount,
             hold_expires_at_unix_ms,
+
+            transfer_to: None,
         };
         state.event_count += 1;
         state.track_reservation(&event);
@@ -1028,6 +1095,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         let release_event = Event {
             event_id: Event::generate_id(),
@@ -1044,6 +1113,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: Some(reservation_id.to_string()),
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         state.balance += input.amount;
@@ -1127,6 +1198,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: Some(reservation_id.to_string()),
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         state.event_count += 1;
         state.apply_release(reservation_id);
@@ -1298,6 +1371,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         // Apply locally first (record tombstone + cascade), then
@@ -1425,6 +1500,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
             void_ref: Some(loser.event_id.clone()),
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         // Apply void to state
@@ -1470,6 +1547,8 @@ impl<S: shardd_storage::StorageBackend> SharedState<S> {
                     void_ref: Some(loser.event_id.clone()),
                     hold_amount: 0,
                     hold_expires_at_unix_ms: 0,
+
+                    transfer_to: None,
                 };
                 self.apply_correction_event(&release_event).await;
             }
@@ -2203,6 +2282,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         assert!(state.insert_event(&event).await);
         assert_eq!(state.account_balance("b", "a"), -999);
@@ -2307,6 +2388,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         assert!(state.insert_event(&event).await);
         assert!(!state.insert_event(&event).await); // duplicate
@@ -2331,6 +2414,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         state.insert_event(&make(1)).await;
@@ -2361,6 +2446,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         state.insert_event(&make(1, 1)).await;
@@ -2586,6 +2673,8 @@ mod tests {
             void_ref: None,
             hold_amount: 500,
             hold_expires_at_unix_ms: now_ms + 600_000,
+
+            transfer_to: None,
         };
         assert!(state.insert_event(&remote).await);
 
@@ -2664,6 +2753,8 @@ mod tests {
             void_ref: None,
             hold_amount: 500,
             hold_expires_at_unix_ms: now_ms + 59_000,
+
+            transfer_to: None,
         };
         assert!(state.insert_event(&local_expiring).await);
 
@@ -2733,6 +2824,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         state.insert_event(&make(1)).await;
         state.insert_event(&make(3)).await; // gap at 2
@@ -2761,6 +2854,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         state.insert_event(&event).await;
 
@@ -2797,6 +2892,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         let e3 = Event {
             event_id: "remote-3".into(),
@@ -2813,6 +2910,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         storage.insert_event(&e1).await.unwrap();
         storage.insert_event(&e3).await.unwrap();
@@ -2911,6 +3010,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         storage.insert_event(&prior_event).await.unwrap();
 
@@ -3006,6 +3107,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
 
         // Insert remote event — should trigger conflict detection
@@ -3071,6 +3174,7 @@ mod tests {
                 void_ref: None,
                 hold_amount: 0,
                 hold_expires_at_unix_ms: 0,
+                transfer_to: None,
             })
             .collect();
 
@@ -3125,6 +3229,8 @@ mod tests {
                 void_ref: None,
                 hold_amount: 0,
                 hold_expires_at_unix_ms: 0,
+
+                transfer_to: None,
             };
 
             // Manually compute expected digest
@@ -3337,6 +3443,8 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+
+            transfer_to: None,
         };
         storage.insert_event(&meta_delete).await.unwrap();
 

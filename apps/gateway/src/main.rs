@@ -29,6 +29,8 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod evm_rpc;
+
 #[derive(Parser)]
 #[command(
     name = "shardd-gateway",
@@ -70,7 +72,7 @@ struct Cli {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     mesh: Arc<MeshClient>,
     auth: Option<Arc<GatewayAuthClient>>,
     public_edges: Option<Arc<PublicEdgeDirectory>>,
@@ -118,7 +120,7 @@ struct PublicEdgeDirectory {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum GatewayMachineAction {
+pub(crate) enum GatewayMachineAction {
     Read,
     Write,
     ReadOwnAccount,
@@ -126,10 +128,10 @@ enum GatewayMachineAction {
 }
 
 #[derive(Debug, Clone)]
-struct GatewayAuthClient {
-    base_url: String,
-    shared_secret: String,
-    http: Client,
+pub(crate) struct GatewayAuthClient {
+    pub(crate) base_url: String,
+    pub(crate) shared_secret: String,
+    pub(crate) http: Client,
     cache: DashMap<String, CachedDecision>,
 }
 
@@ -415,6 +417,10 @@ fn build_app(state: AppState) -> Router {
         .route("/digests", get(proxy_digests))
         .route("/debug/origin/:id", get(proxy_debug_origin))
         .route("/registry", get(proxy_registry))
+        .route(
+            "/evm/{bucket}",
+            axum::routing::post(evm_rpc::evm_rpc_handler),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -429,7 +435,7 @@ impl GatewayAuthClient {
         })
     }
 
-    async fn authorize(
+    pub(crate) async fn authorize(
         &self,
         api_key: &str,
         action: GatewayMachineAction,
@@ -1304,7 +1310,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct AuthorizedBucket {
+pub(crate) struct AuthorizedBucket {
     user_id: Uuid,
 }
 
@@ -1330,6 +1336,7 @@ impl GatewayBucketEventRequest {
             // never set it. `submit_create_event` overwrites the value
             // based on the route after this conversion.
             allow_reserved_bucket: false,
+            transfer_to: None,
         }
     }
 }
@@ -1935,6 +1942,7 @@ async fn billing_check_and_deduct(
         skip_hold: Some(true),
         // Internal billing path writes into `__billing__<user_id>`.
         allow_reserved_bucket: true,
+        transfer_to: None,
     };
     // Fire-and-forget: don't block the user's request on the deduction write
     let mesh = state.mesh.clone();
@@ -2042,7 +2050,7 @@ fn authorize_internal_machine(state: &AppState, headers: &HeaderMap) -> Result<(
     Ok(())
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ")
         .or_else(|| raw.strip_prefix("bearer "))
@@ -2542,7 +2550,7 @@ fn rpc_error_response(node: &MeshNode, error: NodeRpcError) -> Response {
     }
 }
 
-fn gateway_unavailable_response(message: String) -> Response {
+pub(crate) fn gateway_unavailable_response(message: String) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": message })),
@@ -2562,7 +2570,7 @@ fn gateway_internal_response(node: Option<&MeshNode>, message: String) -> Respon
     response
 }
 
-fn unauthorized(message: &str) -> Response {
+pub(crate) fn unauthorized(message: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({ "error": message })),
@@ -2570,7 +2578,7 @@ fn unauthorized(message: &str) -> Response {
         .into_response()
 }
 
-fn forbidden(message: &str) -> Response {
+pub(crate) fn forbidden(message: &str) -> Response {
     (
         StatusCode::FORBIDDEN,
         Json(serde_json::json!({ "error": message })),

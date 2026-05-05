@@ -141,6 +141,7 @@ mod tests {
             void_ref: None,
             hold_amount: 0,
             hold_expires_at_unix_ms: 0,
+            transfer_to: None,
         }
     }
 

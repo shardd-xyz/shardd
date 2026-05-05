@@ -374,3 +374,17 @@ pub struct AuditEntry {
     pub target_user_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct EvmBucketStatus {
+    pub enabled: bool,
+    pub paused: bool,
+    pub whitelist_enabled: bool,
+    pub addresses: Vec<WhitelistedAddress>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WhitelistedAddress {
+    pub address: String,
+    pub added_at: String,
+}

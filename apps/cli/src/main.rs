@@ -168,6 +168,7 @@ async fn run_mesh(command: Commands, client: MeshClient) -> Result<()> {
                         release_reservation: None,
                         skip_hold: None,
                         allow_reserved_bucket: false,
+                        transfer_to: None,
                     },
                 ))
                 .await?

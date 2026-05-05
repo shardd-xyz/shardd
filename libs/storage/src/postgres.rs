@@ -42,6 +42,7 @@ struct EventRow {
     void_ref: Option<String>,
     hold_amount: i64,
     hold_expires_at_unix_ms: i64,
+    transfer_to: Option<String>,
 }
 
 impl From<EventRow> for Event {
@@ -68,17 +69,18 @@ impl From<EventRow> for Event {
             void_ref: r.void_ref,
             hold_amount: r.hold_amount as u64,
             hold_expires_at_unix_ms: r.hold_expires_at_unix_ms as u64,
+            transfer_to: r.transfer_to,
         }
     }
 }
 
-const EVENT_COLS: &str = "event_id, bucket, origin_node_id, origin_epoch, origin_seq, created_at_unix_ms, type, account, amount, note, idempotency_nonce, void_ref, hold_amount, hold_expires_at_unix_ms";
+const EVENT_COLS: &str = "event_id, bucket, origin_node_id, origin_epoch, origin_seq, created_at_unix_ms, type, account, amount, note, idempotency_nonce, void_ref, hold_amount, hold_expires_at_unix_ms, transfer_to";
 
 impl StorageBackend for PostgresStorage {
     async fn insert_event(&self, event: &Event) -> Result<InsertResult> {
         let result = sqlx::query(
-            "INSERT INTO events (event_id, bucket, origin_node_id, origin_epoch, origin_seq, created_at_unix_ms, type, account, amount, note, idempotency_nonce, void_ref, hold_amount, hold_expires_at_unix_ms)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            "INSERT INTO events (event_id, bucket, origin_node_id, origin_epoch, origin_seq, created_at_unix_ms, type, account, amount, note, idempotency_nonce, void_ref, hold_amount, hold_expires_at_unix_ms, transfer_to)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT (bucket, origin_node_id, origin_epoch, origin_seq) DO NOTHING",
         )
         .bind(&event.event_id)
@@ -95,6 +97,7 @@ impl StorageBackend for PostgresStorage {
         .bind(&event.void_ref)
         .bind(event.hold_amount as i64)
         .bind(event.hold_expires_at_unix_ms as i64)
+        .bind(&event.transfer_to)
         .execute(&self.pool)
         .await;
 
@@ -136,8 +139,8 @@ impl StorageBackend for PostgresStorage {
         if events.is_empty() {
             return Ok(0);
         }
-        // Postgres param limit is 65535. With 14 cols/event, chunk at 4096
-        // events (= 57344 params). Ordering events by (bucket, origin,
+        // Postgres param limit is 65535. With 15 cols/event, chunk at 4096
+        // events (= 61440 params). Ordering events by (bucket, origin,
         // epoch, seq) reduces deadlocks with concurrent writers touching
         // overlapping row ranges.
         const CHUNK: usize = 4096;
@@ -153,12 +156,12 @@ impl StorageBackend for PostgresStorage {
         for batch in sorted.chunks(CHUNK) {
             let mut sql = format!("INSERT INTO events ({EVENT_COLS}) VALUES ");
             for (i, _) in batch.iter().enumerate() {
-                let b = i * 14;
+                let b = i * 15;
                 if i > 0 {
                     sql.push_str(", ");
                 }
                 sql.push_str(&format!(
-                    "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                    "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
                     b + 1,
                     b + 2,
                     b + 3,
@@ -172,7 +175,8 @@ impl StorageBackend for PostgresStorage {
                     b + 11,
                     b + 12,
                     b + 13,
-                    b + 14
+                    b + 14,
+                    b + 15
                 ));
             }
             sql.push_str(
@@ -195,7 +199,8 @@ impl StorageBackend for PostgresStorage {
                     .bind(&event.idempotency_nonce)
                     .bind(&event.void_ref)
                     .bind(event.hold_amount as i64)
-                    .bind(event.hold_expires_at_unix_ms as i64);
+                    .bind(event.hold_expires_at_unix_ms as i64)
+                    .bind(&event.transfer_to);
             }
             let result = query.execute(&self.pool).await?;
             total += result.rows_affected() as usize;
@@ -485,6 +490,7 @@ impl StorageBackend for PostgresStorage {
                 void_ref: row.void_ref.clone(),
                 hold_amount: row.hold_amount,
                 hold_expires_at_unix_ms: row.hold_expires_at_unix_ms,
+                transfer_to: row.transfer_to.clone(),
             }
             .into();
             if i > 0 {

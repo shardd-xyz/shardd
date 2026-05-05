@@ -14,6 +14,23 @@ pub struct OwnedBucket {
     /// handler archives the row too. The authoritative nuked signal
     /// lives in the mesh meta log (`deleted_buckets`).
     pub archived_at: Option<DateTime<Utc>>,
+    pub evm_enabled: bool,
+    pub evm_paused: bool,
+    pub evm_whitelist_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WhitelistedAddress {
+    pub address: String,
+    pub added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvmBucketStatus {
+    pub enabled: bool,
+    pub paused: bool,
+    pub whitelist_enabled: bool,
+    pub addresses: Vec<WhitelistedAddress>,
 }
 
 /// Scope for `BucketRegistry::list`. `Active` returns only un-archived
@@ -44,6 +61,30 @@ pub trait BucketRegistry: Send + Sync {
     /// Count of non-archived buckets. Used for admin read-outs only; no
     /// longer gates account deletion (soft-delete replaces the old guard).
     async fn count(&self, user_id: Uuid) -> AppResult<i64>;
+
+    // ── EVM settings ─────────────────────────────────────────────
+    async fn get_evm_status(&self, user_id: Uuid, name: &str)
+    -> AppResult<Option<EvmBucketStatus>>;
+    async fn set_evm_enabled(&self, user_id: Uuid, name: &str, enabled: bool) -> AppResult<bool>;
+    async fn set_evm_paused(&self, user_id: Uuid, name: &str, paused: bool) -> AppResult<bool>;
+    async fn set_evm_whitelist_enabled(
+        &self,
+        user_id: Uuid,
+        name: &str,
+        enabled: bool,
+    ) -> AppResult<bool>;
+    async fn add_whitelist_address(
+        &self,
+        user_id: Uuid,
+        name: &str,
+        address: &str,
+    ) -> AppResult<WhitelistedAddress>;
+    async fn remove_whitelist_address(
+        &self,
+        user_id: Uuid,
+        name: &str,
+        address: &str,
+    ) -> AppResult<bool>;
 }
 
 /// Bucket names are a subset of what the mesh accepts so we can safely pass
@@ -71,6 +112,21 @@ pub fn validate_bucket_name(name: &str) -> AppResult<()> {
                 "bucket name may only contain lowercase letters, digits, '-' or '_'".into(),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Validate an Ethereum address: 42-char 0x-prefixed hex.
+pub fn validate_evm_address(address: &str) -> AppResult<()> {
+    if address.len() != 42 || !address.starts_with("0x") {
+        return Err(AppError::InvalidInput(
+            "address must be 42 characters starting with 0x".into(),
+        ));
+    }
+    if !address[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::InvalidInput(
+            "address contains non-hex characters".into(),
+        ));
     }
     Ok(())
 }

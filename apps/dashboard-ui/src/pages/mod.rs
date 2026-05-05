@@ -12,6 +12,7 @@ pub mod cli_authorize;
 pub mod contact;
 pub mod dashboard;
 pub mod developer_events;
+pub mod evm_settings;
 pub mod keys;
 pub mod legal;
 pub mod login;

@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, put},
 };
 use reqwest::{Method, header::HeaderMap as ReqwestHeaderMap};
 use secrecy::ExposeSecret;
@@ -16,7 +16,10 @@ use crate::{
     app_error::{AppError, AppResult},
     application::dashboard_session,
     infra::config::PublicEdgeConfig,
-    use_cases::buckets_registry::{BucketStatusFilter, OwnedBucket, validate_bucket_name},
+    use_cases::buckets_registry::{
+        BucketStatusFilter, EvmBucketStatus, OwnedBucket, WhitelistedAddress, validate_bucket_name,
+        validate_evm_address,
+    },
 };
 
 pub fn router() -> Router<AppState> {
@@ -36,8 +39,28 @@ pub fn router() -> Router<AppState> {
         )
         .route("/events", get(list_events))
         .route("/edges", get(list_edges))
+        .route("/buckets/{bucket}/evm", get(get_evm_status))
+        .route("/buckets/{bucket}/evm/enable", put(enable_evm))
+        .route("/buckets/{bucket}/evm/disable", put(disable_evm))
+        .route("/buckets/{bucket}/evm/pause", put(pause_evm))
+        .route("/buckets/{bucket}/evm/resume", put(resume_evm))
+        .route(
+            "/buckets/{bucket}/evm/whitelist/enable",
+            put(enable_evm_whitelist),
+        )
+        .route(
+            "/buckets/{bucket}/evm/whitelist/disable",
+            put(disable_evm_whitelist),
+        )
+        .route(
+            "/buckets/{bucket}/evm/whitelist/addresses",
+            axum::routing::post(add_whitelist_address),
+        )
+        .route(
+            "/buckets/{bucket}/evm/whitelist/addresses/{address}",
+            axum::routing::delete(remove_whitelist_address),
+        )
 }
-
 #[derive(Debug, Deserialize)]
 struct PurgeBucketQuery {
     #[serde(default)]
@@ -692,4 +715,128 @@ pub(crate) fn path_with_query(path: &str, pairs: &[(&str, Option<&str>)]) -> Str
     } else {
         format!("{path}?{query}")
     }
+}
+
+// ── EVM routes ────────────────────────────────────────────────────
+
+async fn get_evm_status(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<EvmBucketStatus>> {
+    let status = state
+        .bucket_registry
+        .get_evm_status(user.id, &bucket)
+        .await?
+        .unwrap_or(EvmBucketStatus {
+            enabled: false,
+            paused: false,
+            whitelist_enabled: false,
+            addresses: vec![],
+        });
+    Ok(Json(status))
+}
+
+async fn enable_evm(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_enabled(user.id, &bucket, true)
+        .await?;
+    Ok(Json(json!({ "evm_enabled": true })))
+}
+
+async fn disable_evm(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_enabled(user.id, &bucket, false)
+        .await?;
+    Ok(Json(json!({ "evm_enabled": false })))
+}
+
+async fn pause_evm(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_paused(user.id, &bucket, true)
+        .await?;
+    Ok(Json(json!({ "evm_paused": true })))
+}
+
+async fn resume_evm(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_paused(user.id, &bucket, false)
+        .await?;
+    Ok(Json(json!({ "evm_paused": false })))
+}
+
+async fn enable_evm_whitelist(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_whitelist_enabled(user.id, &bucket, true)
+        .await?;
+    Ok(Json(json!({ "evm_whitelist_enabled": true })))
+}
+
+async fn disable_evm_whitelist(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+) -> AppResult<Json<Value>> {
+    state
+        .bucket_registry
+        .set_evm_whitelist_enabled(user.id, &bucket, false)
+        .await?;
+    Ok(Json(json!({ "evm_whitelist_enabled": false })))
+}
+
+#[derive(Deserialize)]
+struct AddWhitelistAddressBody {
+    address: String,
+}
+
+async fn add_whitelist_address(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(bucket): Path<String>,
+    Json(body): Json<AddWhitelistAddressBody>,
+) -> AppResult<Json<WhitelistedAddress>> {
+    let normalized = body.address.to_lowercase();
+    validate_evm_address(&normalized)?;
+    let entry = state
+        .bucket_registry
+        .add_whitelist_address(user.id, &bucket, &normalized)
+        .await?;
+    Ok(Json(entry))
+}
+
+async fn remove_whitelist_address(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((bucket, address)): Path<(String, String)>,
+) -> AppResult<StatusCode> {
+    state
+        .bucket_registry
+        .remove_whitelist_address(user.id, &bucket, &address.to_lowercase())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
