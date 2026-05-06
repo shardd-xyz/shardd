@@ -446,11 +446,12 @@ async fn eth_send_raw_transaction(
     let tx = TxLegacy::rlp_decode_signed(&mut &raw_bytes[..])
         .map_err(|e| evm_rpc_err(-32602, &format!("invalid transaction: {e}")))?;
 
-    // 2. Recover signer — the signature IS the auth
-    let from = tx
-        .recover_signer()
+    // 2. Recover signer — the signature IS the auth.
+    // Use the checksummed (EIP-55) form as the shardd account name
+    // so it matches what the dashboard deposits use.
+    let from = tx.recover_signer()
         .map_err(|_| evm_rpc_err(-32602, "signature recovery failed"))?;
-    let from_str = format!("0x{:x}", from);
+    let from_str = from.to_string(); // checksummed: "0x449963E44220F7A38D8dF653058e5e2F72848700"
 
     // 3. Extract fields
     let tx_obj = tx.tx();
@@ -460,7 +461,7 @@ async fn eth_send_raw_transaction(
             return Err(evm_rpc_err(-32602, "contract creation not supported"));
         }
     };
-    let to_str = format!("0x{:x}", to_addr);
+    let to_str = to_addr.to_string(); // checksummed
     let value: U256 = tx_obj.value;
     let nonce = tx_obj.nonce as u64;
     let tx_chain_id = tx_obj.chain_id.unwrap_or(0);
@@ -1157,7 +1158,7 @@ mod tests {
     async fn test_send_raw_transaction_and_query() {
         let tm = Arc::new(TestMesh::new());
         let bucket = "test";
-        let sender = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        let sender = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
         let receiver = "0x0000000000000000000000000000000000000001";
 
         // Sender starts with 5000
