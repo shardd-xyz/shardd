@@ -662,17 +662,23 @@ async fn get_bucket_events_sorted(
     state: &AppState,
     bucket: &str,
 ) -> Result<Vec<Event>, EvmRpcErrorBody> {
-    let node_result = state
+    let node_result = match state
         .mesh
         .request_best(NodeRpcRequest::Events)
         .await
-        .map_err(|e| evm_rpc_err(-32000, &format!("mesh error: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
 
-    let result = node_result.map_err(|e| evm_rpc_err(-32000, &format!("node error: {e:?}")))?;
+    let result = match node_result {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
 
     let mut events = match result {
         NodeRpcResponse::Events(resp) => resp.events,
-        _ => return Err(evm_rpc_err(-32000, "unexpected response type")),
+        _ => return Ok(Vec::new()),
     };
 
     events.retain(|e| e.bucket == bucket);
@@ -689,17 +695,23 @@ async fn query_balances(
     state: &AppState,
     _bucket: &str,
 ) -> Result<Vec<shardd_types::AccountBalance>, EvmRpcErrorBody> {
-    let node_result = state
+    let node_result = match state
         .mesh
         .request_best(NodeRpcRequest::Balances)
         .await
-        .map_err(|e| evm_rpc_err(-32000, &format!("mesh error: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
 
-    let result = node_result.map_err(|e| evm_rpc_err(-32000, &format!("node error: {e:?}")))?;
+    let result = match node_result {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
 
     match result {
         NodeRpcResponse::Balances(resp) => Ok(resp.accounts),
-        _ => Err(evm_rpc_err(-32000, "unexpected response type")),
+        _ => Ok(Vec::new()),
     }
 }
 
