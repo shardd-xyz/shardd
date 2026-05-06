@@ -13,6 +13,7 @@ use clap::Parser;
 use dashmap::DashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use shardd_broadcast::discovery::{
     derive_psk_from_cluster_key, load_psk_file, parse_bootstrap_peers,
@@ -77,6 +78,10 @@ pub(crate) struct AppState {
     auth: Option<Arc<GatewayAuthClient>>,
     public_edges: Option<Arc<PublicEdgeDirectory>>,
     pub(crate) evm_state: Option<Arc<DashMap<String, evm_rpc::BucketEvmState>>>,
+    /// Local cache of EVM transactions keyed by tx_hash. Used as a
+    /// fallback when the mesh Events RPC is slow or empty, so wallets
+    /// always see their own transactions immediately.
+    pub(crate) evm_txs: Arc<DashMap<String, Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -360,6 +365,7 @@ async fn main() -> Result<()> {
         auth,
         public_edges,
         evm_state: evm_cache,
+        evm_txs: Arc::new(DashMap::new()),
     };
     let app = build_app(state);
 
@@ -2718,6 +2724,7 @@ mod tests {
             auth: None,
             public_edges: None,
             evm_state: None,
+            evm_txs: Arc::new(DashMap::new()),
         }
     }
 

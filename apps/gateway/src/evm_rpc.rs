@@ -463,6 +463,21 @@ async fn eth_send_raw_transaction(
 
     let _response = node_result.map_err(|e| evm_rpc_err(-32000, &format!("node error: {e:?}")))?;
 
+    // Cache the transaction locally so it's visible immediately in
+    // wallet history, even if the mesh Events RPC hasn't caught up.
+    let evm_tx = json!({
+        "hash": tx_hash,
+        "from": from_str,
+        "to": to_str,
+        "value": format!("0x{:x}", value_i64.unsigned_abs()),
+        "nonce": format!("0x{:x}", nonce),
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    });
+    state.evm_txs.insert(tx_hash.clone(), evm_tx);
+
     Ok(json!(tx_hash))
 }
 
@@ -514,6 +529,12 @@ async fn eth_get_transaction_by_hash(
     params: &Option<Value>,
 ) -> Result<Value, EvmRpcErrorBody> {
     let tx_hash_str = extract_param_str(params, 0)?;
+
+    // Check the local cache first — always returns recent EVM transfers.
+    if let Some(cached) = state.evm_txs.get(&tx_hash_str.to_lowercase()) {
+        return Ok(cached.clone());
+    }
+
     let events = get_bucket_events_sorted(state, bucket).await?;
     for (idx, event) in events.iter().enumerate() {
         let event_tx_hash = extract_tx_hash_from_event(event);
@@ -533,6 +554,28 @@ async fn eth_get_transaction_receipt(
     params: &Option<Value>,
 ) -> Result<Value, EvmRpcErrorBody> {
     let tx_hash_str = extract_param_str(params, 0)?;
+
+    // Check cache first for immediate receipts
+    if let Some(cached) = state.evm_txs.get(&tx_hash_str.to_lowercase()) {
+        let from = cached.get("from").and_then(|v| v.as_str()).unwrap_or(ZERO_ADDR);
+        let to = cached.get("to").and_then(|v| v.as_str()).unwrap_or(ZERO_ADDR);
+        return Ok(json!({
+            "transactionHash": tx_hash_str,
+            "transactionIndex": "0x0",
+            "blockNumber": "0x0",
+            "blockHash": ZERO_HASH,
+            "from": from,
+            "to": to,
+            "cumulativeGasUsed": "0x5208",
+            "gasUsed": "0x5208",
+            "contractAddress": null,
+            "logs": [],
+            "logsBloom": EMPTY_BLOOM,
+            "status": "0x1",
+            "effectiveGasPrice": "0x0",
+        }));
+    }
+
     let events = get_bucket_events_sorted(state, bucket).await?;
     for (idx, event) in events.iter().enumerate() {
         let event_tx_hash = extract_tx_hash_from_event(event);
