@@ -424,7 +424,7 @@ fn build_app(state: AppState) -> Router {
         .route("/registry", get(proxy_registry))
         .route(
             "/evm/:user_id/:bucket",
-            axum::routing::post(evm_rpc::evm_rpc_handler),
+            axum::routing::post(evm_rpc::evm_rpc_handler).get(evm_rpc::evm_rpc_handler),
         )
         .layer(CorsLayer::permissive())
         .with_state(state)

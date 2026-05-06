@@ -83,10 +83,20 @@ pub async fn evm_rpc_handler(
     _headers: HeaderMap,
     body: String,
 ) -> Response {
-    let req: EvmRpcRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return make_error(null_value(), -32700, &format!("parse error: {e}"));
+    // Handle empty body (GET requests from wallets) — default to eth_chainId
+    let req: EvmRpcRequest = if body.trim().is_empty() {
+        EvmRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "eth_chainId".into(),
+            params: None,
+            id: Value::Number(0.into()),
+        }
+    } else {
+        match serde_json::from_str(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return make_error(null_value(), -32700, &format!("parse error: {e}"));
+            }
         }
     };
 
@@ -119,6 +129,9 @@ pub async fn evm_rpc_handler(
         }
         "eth_call" => Err(evm_rpc_err(-32601, "smart contracts not supported")),
         "eth_getLogs" => Ok(json!([])),
+        "web3_clientVersion" => Ok(json!("shardd-evm/0.1")),
+        "net_listening" => Ok(json!(false)),
+        "net_peerCount" => Ok(json!("0x0")),
         _ => Err(evm_rpc_err(
             -32601,
             &format!("unknown method: {}", req.method),
