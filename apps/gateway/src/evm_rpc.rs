@@ -132,6 +132,12 @@ pub async fn evm_rpc_handler(
         "web3_clientVersion" => Ok(json!("shardd-evm/0.1")),
         "net_listening" => Ok(json!(false)),
         "net_peerCount" => Ok(json!("0x0")),
+        "eth_feeHistory" => Ok(json!({
+            "oldestBlock": "0x0",
+            "baseFeePerGas": ["0x0"],
+            "gasUsedRatio": [],
+            "reward": []
+        })),
         _ => Err(evm_rpc_err(
             -32601,
             &format!("unknown method: {}", req.method),
