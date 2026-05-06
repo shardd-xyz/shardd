@@ -748,10 +748,6 @@ fn build_block_response(events: &[Event], block_num: usize) -> Result<Value, Evm
             return Ok(Vec::new());
         }
     };
-    let result = match node_result {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
-    };
 
     let mut events = match result {
         NodeRpcResponse::Events(resp) => resp.events,
