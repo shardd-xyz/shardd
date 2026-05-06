@@ -678,15 +678,15 @@ async fn get_bucket_events_sorted(
     state: &AppState,
     bucket: &str,
 ) -> Result<Vec<Event>, EvmRpcErrorBody> {
-    let node_result = match state
-        .mesh
-        .request_best(NodeRpcRequest::Events)
-        .await
+    let node_result = match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        state.mesh.request_best(NodeRpcRequest::Events),
+    )
+    .await
     {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
+        Ok(Ok(r)) => r,
+        _ => return Ok(Vec::new()),
     };
-
     let result = match node_result {
         Ok(r) => r,
         Err(_) => return Ok(Vec::new()),
@@ -711,13 +711,14 @@ async fn query_balances(
     state: &AppState,
     _bucket: &str,
 ) -> Result<Vec<shardd_types::AccountBalance>, EvmRpcErrorBody> {
-    let node_result = match state
-        .mesh
-        .request_best(NodeRpcRequest::Balances)
-        .await
+    let node_result = match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        state.mesh.request_best(NodeRpcRequest::Balances),
+    )
+    .await
     {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
+        Ok(Ok(r)) => r,
+        _ => return Ok(Vec::new()),
     };
 
     let result = match node_result {
