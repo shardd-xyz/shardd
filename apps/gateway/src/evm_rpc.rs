@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shardd_types::{CreateEventRequest, Event, NodeRpcRequest, NodeRpcResponse};
+use uuid::Uuid;
 
 use crate::AppState;
 
@@ -100,32 +101,40 @@ pub async fn evm_rpc_handler(
         }
     };
 
+    // Parse user_id and compute the internal bucket name (same format
+    // the dashboard uses: `user_{id}__bucket_{hex(name)}`).
+    let uid = match Uuid::parse_str(&user_id) {
+        Ok(u) => u,
+        Err(e) => return make_error(null_value(), -32602, &format!("invalid user id: {e}")),
+    };
+    let internal_bucket = crate::internal_bucket_for_user(uid, &bucket);
+
     let cache_key = format!("{user_id}:{bucket}");
-    let bucket_ref = bucket.as_str();
+    let internal_bucket_ref = internal_bucket.as_str();
 
     let needs_write = matches!(req.method.as_str(), "eth_sendRawTransaction");
     if needs_write {
-        if let Err(resp) = ensure_evm_ready(&state, &cache_key, &user_id, bucket_ref).await {
+        if let Err(resp) = ensure_evm_ready(&state, &cache_key, &user_id, &bucket).await {
             return resp;
         }
     }
 
     let result = match req.method.as_str() {
-        "eth_chainId" | "net_version" => eth_chain_id(bucket_ref),
+        "eth_chainId" | "net_version" => eth_chain_id(&bucket),
         "eth_accounts" => Ok(json!([])),
-        "eth_getBalance" => eth_get_balance(&state, &bucket, &req.params).await,
-        "eth_getTransactionCount" => eth_get_transaction_count(&state, &bucket, &req.params).await,
-        "eth_sendRawTransaction" => eth_send_raw_transaction(&state, &bucket, &req.params).await,
+        "eth_getBalance" => eth_get_balance(&state, internal_bucket_ref, &req.params).await,
+        "eth_getTransactionCount" => eth_get_transaction_count(&state, internal_bucket_ref, &req.params).await,
+        "eth_sendRawTransaction" => eth_send_raw_transaction(&state, internal_bucket_ref, &req.params).await,
         "eth_gasPrice" => Ok(json!("0x0")),
         "eth_estimateGas" => Ok(json!("0x5208")),
-        "eth_blockNumber" => eth_block_number(&state, &bucket).await,
-        "eth_getBlockByNumber" => eth_get_block_by_number(&state, &bucket, &req.params).await,
-        "eth_getBlockByHash" => eth_get_block_by_hash(&state, &bucket, &req.params).await,
+        "eth_blockNumber" => eth_block_number(&state, internal_bucket_ref).await,
+        "eth_getBlockByNumber" => eth_get_block_by_number(&state, internal_bucket_ref, &req.params).await,
+        "eth_getBlockByHash" => eth_get_block_by_hash(&state, internal_bucket_ref, &req.params).await,
         "eth_getTransactionByHash" => {
-            eth_get_transaction_by_hash(&state, &bucket, &req.params).await
+            eth_get_transaction_by_hash(&state, internal_bucket_ref, &req.params).await
         }
         "eth_getTransactionReceipt" => {
-            eth_get_transaction_receipt(&state, &bucket, &req.params).await
+            eth_get_transaction_receipt(&state, internal_bucket_ref, &req.params).await
         }
         "eth_call" => Err(evm_rpc_err(-32601, "smart contracts not supported")),
         "eth_getLogs" => Ok(json!([])),

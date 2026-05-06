@@ -2383,7 +2383,7 @@ fn unreachable_public_edge_summary(edge: &PublicEdgeConfig) -> PublicEdgeSummary
     }
 }
 
-fn internal_bucket_for_user(user_id: Uuid, bucket: &str) -> String {
+pub(crate) fn internal_bucket_for_user(user_id: Uuid, bucket: &str) -> String {
     format!(
         "user_{}__bucket_{}",
         sanitize_namespace_value(&user_id.to_string()),
@@ -2404,7 +2404,7 @@ fn internal_bucket_prefix(user_id: Uuid) -> String {
     )
 }
 
-fn sanitize_namespace_value(value: &str) -> String {
+pub(crate) fn sanitize_namespace_value(value: &str) -> String {
     value
         .chars()
         .map(|ch| {
