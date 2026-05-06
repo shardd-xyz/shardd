@@ -429,8 +429,8 @@ async fn eth_send_raw_transaction(
     // 8. Create transfer event
     let note = json!({
         "evm": {
-            "tx_hash": tx_hash,
-            "to": to_str,
+            "tx_hash": tx_hash.clone(),
+            "to": to_str.clone(),
             "nonce": nonce,
             "chain_id": expected_chain,
         }
@@ -452,7 +452,7 @@ async fn eth_send_raw_transaction(
         release_reservation: None,
         skip_hold: Some(true),
         allow_reserved_bucket: false,
-        transfer_to: Some(to_str),
+        transfer_to: Some(to_str.clone()),
     };
 
     let node_result = state
