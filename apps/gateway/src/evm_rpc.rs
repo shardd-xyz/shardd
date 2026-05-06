@@ -139,6 +139,10 @@ const UNCLES_HASH: &str = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a
 /// per this interval, not per transaction.
 const EVM_STATE_CACHE_TTL: Duration = Duration::from_secs(30);
 
+/// Wei scaling: 1 shardd credit unit = 10^18 wei = 1 ETH in wallets.
+/// Balance reads multiply by this; transaction writes divide by this.
+const EVM_WEI_SCALE: u64 = 1_000_000_000_000_000_000; // 10^18
+
 // ── Public handler ───────────────────────────────────────────────────
 
 pub async fn evm_rpc_handler(
@@ -401,7 +405,8 @@ async fn eth_get_balance(
         .find(|b| b.account.to_lowercase() == address.to_lowercase())
         .map(|b| b.balance)
         .unwrap_or(0);
-    let wei = balance.max(0) as u64;
+    // Scale: 1 shardd unit = 10^18 wei so wallets show ETH-like amounts
+    let wei = (balance.max(0) as u128) * (EVM_WEI_SCALE as u128);
     Ok(json!(format!("0x{:x}", wei)))
 }
 
@@ -472,8 +477,13 @@ async fn eth_send_raw_transaction(
         ));
     }
 
-    // 5. Validate value fits i64
-    let value_i64: i64 = value
+    // 5. Validate value — divide by wei scale, check it fits i64
+    let value_u128: u128 = value.try_into()
+        .map_err(|_| evm_rpc_err(-32000, "value too large"))?;
+    if value_u128 % (EVM_WEI_SCALE as u128) != 0 {
+        return Err(evm_rpc_err(-32000, "value must be a multiple of 10^18 wei (1 shardd unit)"));
+    }
+    let value_i64: i64 = (value_u128 / (EVM_WEI_SCALE as u128))
         .try_into()
         .map_err(|_| evm_rpc_err(-32000, "value exceeds i64 range"))?;
 
@@ -592,7 +602,7 @@ async fn eth_send_raw_transaction(
             "hash": tx_hash,
             "from": from_str,
             "to": to_str,
-            "value": format!("0x{:x}", value_i64.unsigned_abs()),
+            "value": format!("0x{:x}", (value_i64.unsigned_abs() as u128) * (EVM_WEI_SCALE as u128)),
             "nonce": format!("0x{:x}", nonce),
             "timestamp_secs": now_ms / 1000,
         });
@@ -615,7 +625,7 @@ async fn eth_send_raw_transaction(
         "hash": tx_hash,
         "from": from_str,
         "to": to_str,
-        "value": format!("0x{:x}", value_i64.unsigned_abs()),
+        "value": format!("0x{:x}", (value_i64.unsigned_abs() as u128) * (EVM_WEI_SCALE as u128)),
         "nonce": format!("0x{:x}", nonce),
         "timestamp_secs": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -805,7 +815,7 @@ fn build_tx_object(event: &Event, block_num: usize) -> Result<Value, EvmRpcError
     });
 
     let value = if event.amount < 0 {
-        event.amount.unsigned_abs() as u64
+        (event.amount.unsigned_abs() as u128) * (EVM_WEI_SCALE as u128)
     } else {
         0
     };
@@ -958,9 +968,9 @@ async fn get_nonce(state: &AppState, bucket: &str, address: &str) -> Result<u64,
 mod tests {
     use super::*;
 
-    // Pre-computed signed legacy transaction: 1 wei from Anvil default
-    // key (0xac09…) to 0x00…01, nonce 0, gas 21000, chain-id 2619539295.
-    const TEST_RAW_TX: &str = "0xf8648080825208940000000000000000000000000000000000000001018085013845fee2a0e518d16f55eed2c67caf67e819f18633e73d78942c73001f7fff1cc9b16c5945a0385920dd32c88324353a2e2fb7f1bec17afb9008249c01afb1796fee36be25a4";
+    // Pre-computed signed legacy transaction: 10^18 wei (1 shardd unit)
+    // from Anvil default key to 0x00…01, nonce 0, chain-id 2619539295.
+    const TEST_RAW_TX: &str = "0xf86c8080825208940000000000000000000000000000000000000001880de0b6b3a76400008085013845fee2a0eaeb5e07f03a0169726ad43383c47433548fa2eb5600fcdbf3d80f9fabbb2061a0468b7fbc82aa03396e95ee773aa5b382e4fba6691af71eaa4204dfc6c63f493b";
 
     fn test_state() -> AppState {
         let tm = Arc::new(TestMesh::new());
@@ -1016,7 +1026,8 @@ mod tests {
         );
         let params = Some(json!(["0xabc1230000000000000000000000000000000000"]));
         let result = eth_get_balance(&state, "test", &params).await.unwrap();
-        assert_eq!(result, json!("0x3e8")); // 1000 hex
+        // 1000 shardd units * 10^18 = 1000 ETH in wei
+        assert_eq!(result, json!("0x3635c9adc5dea00000")); // 1000 * 1e18
     }
 
     #[tokio::test]
@@ -1133,17 +1144,18 @@ mod tests {
         let tx_hash = result.as_str().unwrap().to_string();
         assert!(tx_hash.starts_with("0x"), "tx hash: {tx_hash}");
 
-        // Check sender balance: 5000 - 1 = 4999
+        // Check sender balance: 5000 - 1 = 4999 shardd units
+        // Scaled: 4999 * 10^18 wei
         let bal = eth_get_balance(&state, bucket, &Some(json!([sender, "latest"])))
             .await
             .unwrap();
-        assert_eq!(bal, json!("0x1387"), "sender balance after send");
+        assert_eq!(bal, json!("0x10eff0fae29b1bc0000"), "sender balance after send");
 
-        // Check receiver got 1
+        // Check receiver got 1 shardd unit = 10^18 wei
         let rbal = eth_get_balance(&state, bucket, &Some(json!([receiver, "latest"])))
             .await
             .unwrap();
-        assert_eq!(rbal, json!("0x1"), "receiver balance");
+        assert_eq!(rbal, json!("0xde0b6b3a7640000"), "receiver balance");
 
         // Nonce incremented
         let nonce = eth_get_transaction_count(&state, bucket, &Some(json!([sender, "latest"])))
