@@ -295,13 +295,14 @@ fn extract_param_str(params: &Option<Value>, index: usize) -> Result<String, Evm
 
 fn eth_chain_id(bucket: &str) -> Result<Value, EvmRpcErrorBody> {
     let hash = keccak256(bucket.as_bytes());
-    let chain_id = u64::from_be_bytes([hash[0], hash[1], hash[2], hash[3], 0, 0, 0, 0]);
+    // Use the first 4 bytes as a u32 chain ID — small enough for all wallets
+    let chain_id = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) as u64;
     Ok(json!(format!("0x{:x}", chain_id)))
 }
 
 fn chain_id_for_bucket(bucket: &str) -> u64 {
     let hash = keccak256(bucket.as_bytes());
-    u64::from_be_bytes([hash[0], hash[1], hash[2], hash[3], 0, 0, 0, 0])
+    u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) as u64
 }
 
 async fn eth_get_balance(
