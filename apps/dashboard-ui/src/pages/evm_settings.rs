@@ -12,6 +12,31 @@ pub fn EvmSettings(bucket: String) -> Element {
         }
     });
 
+    let chain_id = use_resource({
+        let bucket = bucket.clone();
+        move || {
+            let bucket = bucket.clone();
+            async move {
+                let url = format!("https://use1.api.shardd.xyz/evm/{bucket}");
+                let body = r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#;
+                let resp = gloo_net::http::Request::post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body)
+                    .ok()?
+                    .send()
+                    .await
+                    .ok()?;
+                let text = resp.text().await.ok()?;
+                let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+                let chain = v.get("result")?.as_str()?;
+                let dec = u64::from_str_radix(chain.trim_start_matches("0x"), 16).ok()?;
+                Some(dec.to_string())
+            }
+        }
+    });
+
+    let mut copied = use_signal(|| None::<usize>);
+
     let status = evm.read();
     let status_ref = status.as_ref().and_then(|s| s.as_ref());
     let enabled = status_ref.map(|s| s.enabled).unwrap_or(false);
@@ -22,13 +47,14 @@ pub fn EvmSettings(bucket: String) -> Element {
     } else {
         "Disabled"
     };
-    let badge_tone = if enabled && !paused {
-        BadgeTone::Success
-    } else {
-        BadgeTone::Neutral
-    };
+    let badge_tone = if enabled && !paused { BadgeTone::Success } else { BadgeTone::Neutral };
 
-    let rpc_url = format!("https://use1.api.shardd.xyz/evm/{bucket}");
+    let edges: [(&str, &str); 3] = [
+        ("US East", "https://use1.api.shardd.xyz"),
+        ("EU Central", "https://euc1.api.shardd.xyz"),
+        ("Asia Pacific", "https://ape1.api.shardd.xyz"),
+    ];
+    let rpc_path = format!("/evm/{bucket}");
 
     macro_rules! toggle {
         ($name:ident, $api:ident) => {
@@ -50,6 +76,13 @@ pub fn EvmSettings(bucket: String) -> Element {
     toggle!(on_pause, pause_evm);
     toggle!(on_resume, resume_evm);
 
+    let chain_id_text = chain_id
+        .read()
+        .as_ref()
+        .and_then(|s| s.as_ref())
+        .map(|s| s.clone())
+        .unwrap_or_else(|| "\u{2026}".to_string());
+
     rsx! {
         section { class: "rounded-lg border border-base-800 bg-base-900 p-6 grid gap-5",
             div { class: "flex justify-between items-start",
@@ -64,43 +97,69 @@ pub fn EvmSettings(bucket: String) -> Element {
                 "transaction proves account ownership."
             }
 
+            // ── RPC URLs for each edge ──────────────────────────────
             div { class: "rounded-lg border border-base-800 bg-base-1000 p-4 grid gap-3",
-                div { class: "grid gap-1",
-                    span { class: "text-xs text-base-500 uppercase tracking-widest", "RPC URL" }
-                    div { class: "flex items-center gap-2",
-                        code { class: "flex-1 font-mono text-xs text-fg px-3 py-2 rounded bg-base-900 break-all", "{rpc_url}" }
-                        button {
-                            class: "px-3 py-2 rounded text-xs bg-base-800 hover:bg-base-700 text-fg transition",
-                            onclick: {
-                                let text = rpc_url.clone();
-                                move |_| {
-                                    if let Some(w) = web_sys::window() {
-                                        let _ = w.navigator().clipboard().write_text(&text);
-                                    }
+                span { class: "text-xs text-base-500 uppercase tracking-widest", "RPC Endpoints" }
+                for edge_row in edges.iter().enumerate() {
+                    {
+                        let i = edge_row.0;
+                        let label = edge_row.1.0;
+                        let host = edge_row.1.1;
+                        let url = format!("{host}{rpc_path}");
+                        let is_copied = *copied.read() == Some(i);
+                        rsx! {
+                            div { class: "flex items-center justify-between gap-3",
+                                div { class: "grid gap-0.5 flex-1 min-w-0",
+                                    span { class: "text-[11px] text-base-500", "{label}" }
+                                    code { class: "font-mono text-xs text-fg truncate block", "{url}" }
                                 }
-                            },
-                            "Copy"
+                                button {
+                                    class: if is_copied {
+                                        "shrink-0 px-3 py-1.5 rounded text-xs transition bg-green-950 text-green-400"
+                                    } else {
+                                        "shrink-0 px-3 py-1.5 rounded text-xs transition bg-base-800 hover:bg-base-700 text-fg"
+                                    },
+                                    onclick: {
+                                        let url = url.clone();
+                                        let j = i;
+                                        move |_| {
+                                            let url = url.clone();
+                                            if let Some(w) = web_sys::window() {
+                                                let _ = w.navigator().clipboard().write_text(&url);
+                                            }
+                                            copied.set(Some(j));
+                                            let mut c = copied;
+                                            spawn(async move {
+                                                gloo_timers::future::TimeoutFuture::new(2000).await;
+                                                c.set(None);
+                                            });
+                                        }
+                                    },
+                                    if is_copied { "Copied!" } else { "Copy" }
+                                }
+                            }
                         }
                     }
                 }
-                if enabled {
+            }
+
+            // ── Chain ID card ──────────────────────────────────────
+            if enabled {
+                div { class: "rounded-lg border border-base-800 bg-base-1000 p-4 grid gap-3",
                     div { class: "grid grid-cols-2 gap-3",
                         div { class: "grid gap-1",
                             span { class: "text-xs text-base-500 uppercase tracking-widest", "Chain ID" }
-                            code { class: "font-mono text-sm text-fg", "auto" }
+                            code { class: "font-mono text-sm text-fg", "{chain_id_text}" }
                         }
                         div { class: "grid gap-1",
                             span { class: "text-xs text-base-500 uppercase tracking-widest", "Symbol" }
                             code { class: "font-mono text-sm text-fg", "SHARD" }
                         }
                     }
-                    p { class: "text-[11px] text-base-500",
-                        "Chain ID is derived from the bucket name. "
-                        "Use the RPC URL in MetaMask and call eth_chainId to get it."
-                    }
                 }
             }
 
+            // ── Enable / Disable ──────────────────────────────────
             div { class: "flex items-center justify-between",
                 span { class: "text-sm text-fg",
                     if enabled { "EVM RPC is enabled" } else { "EVM RPC is disabled" }
