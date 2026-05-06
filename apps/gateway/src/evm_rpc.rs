@@ -78,7 +78,7 @@ const EVM_STATE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 pub async fn evm_rpc_handler(
     State(state): State<AppState>,
-    Path(bucket): Path<String>,
+    Path((user_id, bucket)): Path<(String, String)>,
     Query(_query_params): Query<HashMap<String, String>>,
     _headers: HeaderMap,
     body: String,
@@ -90,22 +90,18 @@ pub async fn evm_rpc_handler(
         }
     };
 
-    if bucket == "*" {
-        return make_error(req.id, -32602, "wildcard not supported");
-    }
+    let cache_key = format!("{user_id}:{bucket}");
+    let bucket_ref = bucket.as_str();
 
     let needs_write = matches!(req.method.as_str(), "eth_sendRawTransaction");
-
-    // For writes, ensure the bucket has EVM enabled (cached check,
-    // not a dashboard call on every request).
     if needs_write {
-        if let Err(resp) = ensure_evm_ready(&state, &bucket).await {
+        if let Err(resp) = ensure_evm_ready(&state, &cache_key, &user_id, bucket_ref).await {
             return resp;
         }
     }
 
     let result = match req.method.as_str() {
-        "eth_chainId" | "net_version" => eth_chain_id(&bucket),
+        "eth_chainId" | "net_version" => eth_chain_id(bucket_ref),
         "eth_accounts" => Ok(json!([])),
         "eth_getBalance" => eth_get_balance(&state, &bucket, &req.params).await,
         "eth_getTransactionCount" => eth_get_transaction_count(&state, &bucket, &req.params).await,
@@ -139,7 +135,7 @@ pub async fn evm_rpc_handler(
 
 /// Returns Ok(()) if the bucket has EVM enabled and is not paused.
 /// Caches the dashboard response for EVM_STATE_CACHE_TTL.
-async fn ensure_evm_ready(state: &AppState, bucket: &str) -> Result<(), Response> {
+async fn ensure_evm_ready(state: &AppState, cache_key: &str, user_id: &str, bucket: &str) -> Result<(), Response> {
     let cache = state.evm_state.as_ref();
     let Some(cache) = cache else {
         // No dashboard URL configured — cannot verify EVM state.
@@ -149,7 +145,7 @@ async fn ensure_evm_ready(state: &AppState, bucket: &str) -> Result<(), Response
     };
 
     // Fast path: cache hit and still fresh.
-    if let Some(ref entry) = cache.get(bucket) {
+    if let Some(ref entry) = cache.get(cache_key) {
         if !entry.is_stale(EVM_STATE_CACHE_TTL) {
             if !entry.value().enabled {
                 return Err(make_error_with(
@@ -166,8 +162,8 @@ async fn ensure_evm_ready(state: &AppState, bucket: &str) -> Result<(), Response
     }
 
     // Slow path: refresh from dashboard (at most once per TTL).
-    let state_ref = fetch_evm_state(state, bucket).await;
-    cache.insert(bucket.to_string(), state_ref.clone());
+    let state_ref = fetch_evm_state(state, user_id, bucket).await;
+    cache.insert(cache_key.to_string(), state_ref.clone());
 
     if !state_ref.enabled {
         return Err(make_error_with(
@@ -182,7 +178,7 @@ async fn ensure_evm_ready(state: &AppState, bucket: &str) -> Result<(), Response
     Ok(())
 }
 
-async fn fetch_evm_state(state: &AppState, bucket: &str) -> BucketEvmState {
+async fn fetch_evm_state(state: &AppState, user_id: &str, bucket: &str) -> BucketEvmState {
     let Some(auth) = &state.auth else {
         return BucketEvmState::disabled();
     };
@@ -192,6 +188,7 @@ async fn fetch_evm_state(state: &AppState, bucket: &str) -> BucketEvmState {
         .post(format!("{}/api/machine/evm/check", auth.base_url))
         .header("x-machine-auth-secret", &auth.shared_secret)
         .json(&json!({
+            "user_id": user_id,
             "bucket_name": bucket,
             "address": "",
             "action": "state",

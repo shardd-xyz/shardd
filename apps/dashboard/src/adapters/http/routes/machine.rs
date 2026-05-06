@@ -1,6 +1,7 @@
 use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
     adapters::http::app_state::AppState,
@@ -88,6 +89,8 @@ fn authorize_machine_caller(state: &AppState, headers: &HeaderMap) -> AppResult<
 
 #[derive(Deserialize)]
 struct EvmCheckRequest {
+    #[serde(default)]
+    user_id: Option<Uuid>,
     bucket_name: String,
 }
 
@@ -104,14 +107,25 @@ async fn evm_check(
 ) -> AppResult<Json<EvmCheckResponse>> {
     authorize_machine_caller(&state, &headers)?;
 
-    let status = state
-        .bucket_registry
-        .get_evm_status_by_name(&request.bucket_name)
-        .await?
-        .unwrap_or(crate::use_cases::buckets_registry::EvmBucketStatus {
-            enabled: false,
-            paused: false,
-        });
+    let status = if let Some(uid) = request.user_id {
+        state
+            .bucket_registry
+            .get_evm_status(uid, &request.bucket_name)
+            .await?
+            .unwrap_or(crate::use_cases::buckets_registry::EvmBucketStatus {
+                enabled: false,
+                paused: false,
+            })
+    } else {
+        state
+            .bucket_registry
+            .get_evm_status_by_name(&request.bucket_name)
+            .await?
+            .unwrap_or(crate::use_cases::buckets_registry::EvmBucketStatus {
+                enabled: false,
+                paused: false,
+            })
+    };
 
     Ok(Json(EvmCheckResponse {
         evm_enabled: status.enabled,

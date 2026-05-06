@@ -423,7 +423,7 @@ fn build_app(state: AppState) -> Router {
         .route("/debug/origin/:id", get(proxy_debug_origin))
         .route("/registry", get(proxy_registry))
         .route(
-            "/evm/:bucket",
+            "/evm/:user_id/:bucket",
             axum::routing::post(evm_rpc::evm_rpc_handler),
         )
         .layer(CorsLayer::permissive())
