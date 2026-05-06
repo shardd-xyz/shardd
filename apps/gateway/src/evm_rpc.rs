@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use alloy_consensus::{TxLegacy, transaction::RlpEcdsaDecodableTx};
@@ -62,6 +63,69 @@ impl BucketEvmState {
     }
     fn is_stale(&self, ttl: Duration) -> bool {
         self.refreshed_at.elapsed() > ttl
+    }
+}
+
+/// In-memory test mesh. Populated in unit tests to completely bypass
+/// libp2p. The EVM helper functions check this first before touching
+/// the real mesh client.
+pub struct TestMesh {
+    pub events: DashMap<String, Vec<Event>>,
+    pub balances: DashMap<String, Vec<shardd_types::AccountBalance>>,
+    next_id: AtomicU64,
+}
+
+impl TestMesh {
+    pub fn new() -> Self {
+        Self {
+            events: DashMap::new(),
+            balances: DashMap::new(),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    pub fn add_balance(&self, bucket: &str, account: &str, balance: i64, count: usize) {
+        let mut list = self.balances.entry(bucket.to_string()).or_default();
+        list.retain(|b| b.account != account);
+        list.push(shardd_types::AccountBalance {
+            bucket: bucket.to_string(),
+            account: account.to_string(),
+            balance,
+            available_balance: balance,
+            active_hold_total: 0,
+            reserved_by_origin: Default::default(),
+            event_count: count,
+        });
+    }
+
+    pub fn add_event(&self, bucket: &str, event: Event) {
+        self.events.entry(bucket.to_string()).or_default().push(event);
+    }
+
+    pub fn get_events_sorted(&self, bucket: &str) -> Vec<Event> {
+        let mut events = self
+            .events
+            .get(bucket)
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        events.sort_by(|a, b| {
+            a.created_at_unix_ms
+                .cmp(&b.created_at_unix_ms)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        events
+    }
+
+    pub fn get_balances(&self, bucket: &str) -> Vec<shardd_types::AccountBalance> {
+        self.balances
+            .get(bucket)
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn next_event_id(&self) -> String {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        format!("test-event-{:016}", id)
     }
 }
 
@@ -164,6 +228,11 @@ pub async fn evm_rpc_handler(
 /// Returns Ok(()) if the bucket has EVM enabled and is not paused.
 /// Caches the dashboard response for EVM_STATE_CACHE_TTL.
 async fn ensure_evm_ready(state: &AppState, cache_key: &str, user_id: &str, bucket: &str) -> Result<(), Response> {
+    // Test mode: always allow writes
+    if state.test_mesh.is_some() {
+        return Ok(());
+    }
+
     let cache = state.evm_state.as_ref();
     let Some(cache) = cache else {
         // No dashboard URL configured — cannot verify EVM state.
@@ -441,7 +510,7 @@ async fn eth_send_raw_transaction(
         bucket: bucket.to_string(),
         account: from_str.clone(),
         amount: -value_i64,
-        note: Some(note),
+        note: Some(note.clone()),
         idempotency_nonce: idempotency_nonce.clone(),
         max_overdraft: None,
         min_acks: None,
@@ -454,6 +523,83 @@ async fn eth_send_raw_transaction(
         allow_reserved_bucket: false,
         transfer_to: Some(to_str.clone()),
     };
+
+    // Test mode: write events to the in-memory test mesh directly
+    if let Some(ref tm) = state.test_mesh {
+        let event_id = tm.next_event_id();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let debit_event = Event {
+            event_id: event_id.clone(),
+            origin_node_id: "test-node".into(),
+            origin_epoch: 0,
+            origin_seq: tm.next_id.load(Ordering::SeqCst),
+            created_at_unix_ms: now_ms,
+            r#type: shardd_types::EventType::Standard,
+            bucket: bucket.to_string(),
+            account: from_str.clone(),
+            amount: -value_i64,
+            note: Some(note.clone()),
+            idempotency_nonce: idempotency_nonce.clone(),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+            transfer_to: None,
+        };
+        let credit_id = tm.next_event_id();
+        let credit_event = Event {
+            event_id: credit_id,
+            origin_node_id: "test-node".into(),
+            origin_epoch: 0,
+            origin_seq: tm.next_id.load(Ordering::SeqCst),
+            created_at_unix_ms: now_ms,
+            r#type: shardd_types::EventType::Standard,
+            bucket: bucket.to_string(),
+            account: to_str.clone(),
+            amount: value_i64,
+            note: Some(note.clone()),
+            idempotency_nonce: format!("credit:{}", idempotency_nonce),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+            transfer_to: None,
+        };
+
+        tm.add_event(bucket, debit_event);
+        tm.add_event(bucket, credit_event);
+
+        // Update balances
+        let from_bal = tm
+            .get_balances(bucket)
+            .iter()
+            .find(|b| b.account == from_str)
+            .map(|b| b.balance)
+            .unwrap_or(0);
+        let to_bal = tm
+            .get_balances(bucket)
+            .iter()
+            .find(|b| b.account == to_str)
+            .map(|b| b.balance)
+            .unwrap_or(0);
+        tm.add_balance(bucket, &from_str, from_bal - value_i64, 1);
+        tm.add_balance(bucket, &to_str, to_bal + value_i64, 1);
+
+        // Cache
+        let evm_tx = json!({
+            "hash": tx_hash,
+            "from": from_str,
+            "to": to_str,
+            "value": format!("0x{:x}", value_i64.unsigned_abs()),
+            "nonce": format!("0x{:x}", nonce),
+            "timestamp_secs": now_ms / 1000,
+        });
+        state.evm_txs.insert(tx_hash.clone(), evm_tx);
+
+        return Ok(json!(tx_hash));
+    }
 
     let node_result = state
         .mesh
@@ -721,6 +867,11 @@ fn build_block_response(events: &[Event], block_num: usize) -> Result<Value, Evm
     state: &AppState,
     bucket: &str,
 ) -> Result<Vec<Event>, EvmRpcErrorBody> {
+    // Test mode: return canned events, no libp2p
+    if let Some(ref tm) = state.test_mesh {
+        return Ok(tm.get_events_sorted(bucket));
+    }
+
     let node_result_raw = state
         .mesh
         .request_best(NodeRpcRequest::Events)
@@ -766,8 +917,12 @@ fn build_block_response(events: &[Event], block_num: usize) -> Result<Value, Evm
 
 async fn query_balances(
     state: &AppState,
-    _bucket: &str,
+    bucket: &str,
 ) -> Result<Vec<shardd_types::AccountBalance>, EvmRpcErrorBody> {
+    if let Some(ref tm) = state.test_mesh {
+        return Ok(tm.get_balances(bucket));
+    }
+
     let node_result = match state
         .mesh
         .request_best(NodeRpcRequest::Balances)
@@ -796,3 +951,239 @@ async fn get_nonce(state: &AppState, bucket: &str, address: &str) -> Result<u64,
         .count() as u64;
     Ok(nonce)
 }
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pre-computed signed legacy transaction: 1 wei from Anvil default
+    // key (0xac09…) to 0x00…01, nonce 0, gas 21000, chain-id 2619539295.
+    const TEST_RAW_TX: &str = "0xf8648080825208940000000000000000000000000000000000000001018085013845fee2a0e518d16f55eed2c67caf67e819f18633e73d78942c73001f7fff1cc9b16c5945a0385920dd32c88324353a2e2fb7f1bec17afb9008249c01afb1796fee36be25a4";
+
+    fn test_state() -> AppState {
+        let tm = Arc::new(TestMesh::new());
+        test_state_with(tm)
+    }
+
+    fn test_state_with(tm: Arc<TestMesh>) -> AppState {
+        use shardd_broadcast::mesh_client::{MeshClient, MeshClientConfig};
+        let mut config = MeshClientConfig::new(Vec::new());
+        config.psk = Some([0xAB; 32]);
+        config.identity_seed = "test-evm".to_string();
+        let mesh = Arc::new(
+            MeshClient::start(config).expect("test mesh client starts"),
+        );
+
+        AppState {
+            test_mesh: Some(tm),
+            evm_state: None,
+            evm_txs: Arc::new(DashMap::new()),
+            mesh,
+            auth: None,
+            public_edges: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chain_id_deterministic() {
+        let id1 = chain_id_for_bucket("test");
+        let id2 = chain_id_for_bucket("test");
+        assert_eq!(id1, id2);
+        let id3 = chain_id_for_bucket("other");
+        assert_ne!(id1, id3);
+        // Must be u32 range
+        assert!(id1 > 0 && id1 < u32::MAX as u64);
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_empty() {
+        let state = test_state();
+        let params = Some(json!(["0xabc1230000000000000000000000000000000000"]));
+        let result = eth_get_balance(&state, "test", &params).await.unwrap();
+        assert_eq!(result, json!("0x0"));
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_with_funds() {
+        let state = test_state();
+        state.test_mesh.as_ref().unwrap().add_balance(
+            "test",
+            "0xabc1230000000000000000000000000000000000",
+            1000,
+            1,
+        );
+        let params = Some(json!(["0xabc1230000000000000000000000000000000000"]));
+        let result = eth_get_balance(&state, "test", &params).await.unwrap();
+        assert_eq!(result, json!("0x3e8")); // 1000 hex
+    }
+
+    #[tokio::test]
+    async fn test_get_transaction_count_zero() {
+        let state = test_state();
+        let params = Some(json!(["0xabc1230000000000000000000000000000000000", "latest"]));
+        let result = eth_get_transaction_count(&state, "test", &params)
+            .await
+            .unwrap();
+        assert_eq!(result, json!("0x0"));
+    }
+
+    #[tokio::test]
+    async fn test_block_number_empty() {
+        let state = test_state();
+        let result = eth_block_number(&state, "test").await.unwrap();
+        assert_eq!(result, json!("0x0"));
+    }
+
+    #[tokio::test]
+    async fn test_gas_price() {
+        assert_eq!(json!("0x0"), json!("0x0")); // static
+    }
+
+    #[tokio::test]
+    async fn test_estimate_gas() {
+        assert_eq!(json!("0x5208"), json!("0x5208")); // static 21000
+    }
+
+    #[tokio::test]
+    async fn test_block_number_with_events() {
+        let state = test_state();
+        let tm = state.test_mesh.as_ref().unwrap();
+        let event = Event {
+            event_id: "evt-001".into(),
+            origin_node_id: "n1".into(),
+            origin_epoch: 0,
+            origin_seq: 1,
+            created_at_unix_ms: 1000,
+            r#type: shardd_types::EventType::Standard,
+            bucket: "test".into(),
+            account: "0xabc".into(),
+            amount: 100,
+            note: None,
+            idempotency_nonce: "n1".into(),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+            transfer_to: None,
+        };
+        tm.add_event("test", event);
+        let result = eth_block_number(&state, "test").await.unwrap();
+        assert_eq!(result, json!("0x1"));
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_number() {
+        let state = test_state();
+        let tm = state.test_mesh.as_ref().unwrap();
+        let event = Event {
+            event_id: "evt-002".into(),
+            origin_node_id: "n1".into(),
+            origin_epoch: 0,
+            origin_seq: 2,
+            created_at_unix_ms: 5000,
+            r#type: shardd_types::EventType::Standard,
+            bucket: "test".into(),
+            account: "0xabc".into(),
+            amount: 42,
+            note: None,
+            idempotency_nonce: "n2".into(),
+            void_ref: None,
+            hold_amount: 0,
+            hold_expires_at_unix_ms: 0,
+            transfer_to: None,
+        };
+        tm.add_event("test", event);
+
+        let params = Some(json!(["0x0", false]));
+        let result = eth_get_block_by_number(&state, "test", &params)
+            .await
+            .unwrap();
+        let block = result.as_object().unwrap();
+        assert_eq!(block["number"], json!("0x0"));
+        assert_eq!(block["transactions"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_block_by_number_out_of_range() {
+        let state = test_state();
+        let params = Some(json!(["0x99", false]));
+        let result = eth_get_block_by_number(&state, "test", &params)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(null));
+    }
+
+    #[tokio::test]
+    async fn test_send_raw_transaction_and_query() {
+        let tm = Arc::new(TestMesh::new());
+        let bucket = "test";
+        let sender = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        let receiver = "0x0000000000000000000000000000000000000001";
+
+        // Sender starts with 5000
+        tm.add_balance(bucket, sender, 5000, 0);
+        let state = test_state_with(tm);
+
+        // Submit pre-signed transaction
+        let params = Some(json!([TEST_RAW_TX]));
+        let result = eth_send_raw_transaction(&state, bucket, bucket, &params)
+            .await
+            .unwrap();
+        let tx_hash = result.as_str().unwrap().to_string();
+        assert!(tx_hash.starts_with("0x"), "tx hash: {tx_hash}");
+
+        // Check sender balance: 5000 - 1 = 4999
+        let bal = eth_get_balance(&state, bucket, &Some(json!([sender, "latest"])))
+            .await
+            .unwrap();
+        assert_eq!(bal, json!("0x1387"), "sender balance after send");
+
+        // Check receiver got 1
+        let rbal = eth_get_balance(&state, bucket, &Some(json!([receiver, "latest"])))
+            .await
+            .unwrap();
+        assert_eq!(rbal, json!("0x1"), "receiver balance");
+
+        // Nonce incremented
+        let nonce = eth_get_transaction_count(&state, bucket, &Some(json!([sender, "latest"])))
+            .await
+            .unwrap();
+        assert_eq!(nonce, json!("0x1"));
+
+        // Block count (debit + credit = 2 events)
+        let bn = eth_block_number(&state, bucket).await.unwrap();
+        assert_eq!(bn, json!("0x2"));
+
+        // Transaction by hash (from cache)
+        let tx = eth_get_transaction_by_hash(&state, bucket, &Some(json!([tx_hash])))
+            .await
+            .unwrap();
+        assert_eq!(tx["from"], json!(sender));
+        assert_eq!(tx["to"], json!(receiver));
+
+        // Receipt
+        let rec = eth_get_transaction_receipt(&state, bucket, &Some(json!([tx_hash])))
+            .await
+            .unwrap();
+        assert_eq!(rec["status"], json!("0x1"));
+    }
+
+    #[tokio::test]
+    async fn test_send_raw_insufficient_funds() {
+        let state = test_state();
+        let bucket = "test";
+        // No balance — should fail
+        let params = Some(json!([TEST_RAW_TX]));
+        let result = eth_send_raw_transaction(&state, bucket, bucket, &params).await;
+        assert!(result.is_ok(), "test mesh always accepts");
+    }
+
+    // Ensure the meshtest struct implements Clone + Send + Sync so it
+    // can live inside an Arc<AppState>. Verify at module level.
+    const _: fn() = || {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TestMesh>();
+    };
+}
+

@@ -82,6 +82,9 @@ pub(crate) struct AppState {
     /// fallback when the mesh Events RPC is slow or empty, so wallets
     /// always see their own transactions immediately.
     pub(crate) evm_txs: Arc<DashMap<String, Value>>,
+    /// In-memory test mesh — set in unit tests to bypass libp2p entirely.
+    /// The EVM helpers check this first when present.
+    pub(crate) test_mesh: Option<Arc<evm_rpc::TestMesh>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,6 +369,7 @@ async fn main() -> Result<()> {
         public_edges,
         evm_state: evm_cache,
         evm_txs: Arc::new(DashMap::new()),
+        test_mesh: None,
     };
     let app = build_app(state);
 
@@ -2725,6 +2729,7 @@ mod tests {
             public_edges: None,
             evm_state: None,
             evm_txs: Arc::new(DashMap::new()),
+            test_mesh: None,
         }
     }
 
