@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
 use shardd_storage::StorageBackend;
@@ -310,14 +310,42 @@ pub async fn state<S: StorageBackend>(app: &AppState<S>) -> StateResponse {
 }
 
 pub async fn events<S: StorageBackend>(app: &AppState<S>) -> EventsResponse {
-    EventsResponse {
-        events: app
-            .shared
-            .storage
-            .query_all_events_sorted()
-            .await
-            .unwrap_or_default(),
+    let mut events = app
+        .shared
+        .storage
+        .query_all_events_sorted()
+        .await
+        .unwrap_or_default();
+
+    // Merge in-memory event buffer — events that have been applied to
+    // account state but not yet persisted to storage by the BatchWriter.
+    // Without this, the Events RPC lags behind the Balances RPC by up
+    // to one flush-interval worth of writes.
+    let buffered: Vec<Event> = app
+        .shared
+        .event_buffer
+        .iter()
+        .map(|entry| entry.value().clone())
+        .collect();
+
+    // Deduplicate: if an event is already in storage (same origin key),
+    // prefer the storage copy. Otherwise add the buffered copy.
+    let storage_keys: std::collections::BTreeSet<_> =
+        events.iter().map(|e| e.origin_key()).collect();
+
+    for evt in buffered {
+        if !storage_keys.contains(&evt.origin_key()) {
+            events.push(evt);
+        }
     }
+
+    events.sort_by(|a, b| {
+        a.created_at_unix_ms
+            .cmp(&b.created_at_unix_ms)
+            .then_with(|| a.event_id.cmp(&b.event_id))
+    });
+
+    EventsResponse { events }
 }
 
 /// Paginated + filtered cluster-wide event listing. Hits storage with

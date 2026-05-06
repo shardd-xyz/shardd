@@ -376,7 +376,7 @@ pub struct SharedState<S: shardd_storage::StorageBackend> {
     /// Max known sequence per (bucket, origin, epoch).
     max_known_seqs: Arc<DashMap<EpochKey, u64>>,
     /// Buffered events still needed for orphan recovery, gap fill, or digest advancement.
-    event_buffer: Arc<DashMap<OriginKey, Event>>,
+    pub(crate) event_buffer: Arc<DashMap<OriginKey, Event>>,
     /// Tracks what's not yet in Postgres: OriginKey → created_at_ms.
     unpersisted: Arc<DashMap<OriginKey, u64>>,
     /// Idempotency cache: (nonce, bucket, account, amount) → winning Event.
