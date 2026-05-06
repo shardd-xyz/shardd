@@ -45,6 +45,7 @@ pub struct FlashKey {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DeveloperProfile {
+    pub id: String,
     pub is_frozen: bool,
     #[serde(default)]
     pub display_name: Option<String>,

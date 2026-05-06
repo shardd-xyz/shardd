@@ -12,12 +12,22 @@ pub fn EvmSettings(bucket: String) -> Element {
         }
     });
 
+    // Fetch user's public ID for constructing the scoped RPC URL
+    let profile = use_resource(|| async { api::developer::me().await.ok() });
+    let user_id = profile
+        .read()
+        .as_ref()
+        .and_then(|p| p.as_ref().map(|p| p.id.clone()))
+        .unwrap_or_default();
+
     let chain_id = use_resource({
         let bucket = bucket.clone();
+        let uid = user_id.clone();
         move || {
             let bucket = bucket.clone();
+            let uid = uid.clone();
             async move {
-                let url = format!("https://use1.api.shardd.xyz/evm/{bucket}");
+                let url = format!("https://use1.api.shardd.xyz/evm/{uid}/{bucket}");
                 let body = r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#;
                 let resp = gloo_net::http::Request::post(&url)
                     .header("Content-Type", "application/json")
@@ -54,7 +64,7 @@ pub fn EvmSettings(bucket: String) -> Element {
         ("EU Central", "https://euc1.api.shardd.xyz"),
         ("Asia Pacific", "https://ape1.api.shardd.xyz"),
     ];
-    let rpc_path = format!("/evm/{bucket}");
+    let rpc_path = format!("/evm/{user_id}/{bucket}");
 
     macro_rules! toggle {
         ($name:ident, $api:ident) => {
