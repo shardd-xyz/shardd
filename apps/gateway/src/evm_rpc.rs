@@ -611,13 +611,41 @@ async fn eth_send_raw_transaction(
         return Ok(json!(tx_hash));
     }
 
-    let node_result = state
-        .mesh
-        .create_event(request)
-        .await
-        .map_err(|e| evm_rpc_err(-32000, &format!("mesh error: {e}")))?;
+    // Fan out the create_event across nodes — `request_best` may pick
+    // a node that hasn't synced the account's latest balance yet.
+    // Trying a few nodes in health+RTT order gives the event a
+    // better chance of landing on one with up-to-date state.
+    let mut nodes = state.mesh.all_nodes();
+    // Rough sort: prefer nodes that are ready, then by ping RTT
+    nodes.sort_by(|a, b| {
+        let a_ready = a.health.as_ref().map(|h| h.ready && !h.overloaded).unwrap_or(false);
+        let b_ready = b.health.as_ref().map(|h| h.ready && !h.overloaded).unwrap_or(false);
+        b_ready.cmp(&a_ready)
+            .then_with(|| a.ping_rtt.unwrap_or(Duration::MAX).cmp(&b.ping_rtt.unwrap_or(Duration::MAX)))
+    });
 
-    let _response = node_result.map_err(|e| evm_rpc_err(-32000, &format!("node error: {e:?}")))?;
+    let mut last_err: Option<EvmRpcErrorBody> = None;
+    for node in nodes.iter().take(3) {
+        let peer_id = match node.peer_id.parse::<shardd_broadcast::libp2p_crate::PeerId>() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        match state.mesh.request_to(peer_id, NodeRpcRequest::CreateEvent(request.clone())).await {
+            Ok(Ok(_)) => {
+                last_err = None;
+                break;
+            }
+            Ok(Err(node_err)) => {
+                last_err = Some(evm_rpc_err(-32000, &format!("node error: {node_err:?}")));
+            }
+            Err(mesh_err) => {
+                last_err = Some(evm_rpc_err(-32000, &format!("mesh error: {mesh_err}")));
+            }
+        }
+    }
+    if let Some(err) = last_err {
+        return Err(err);
+    }
 
     // Cache the transaction locally so it's visible immediately in
     // wallet history, even if the mesh Events RPC hasn't caught up.
