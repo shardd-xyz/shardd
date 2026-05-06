@@ -124,7 +124,7 @@ pub async fn evm_rpc_handler(
         "eth_accounts" => Ok(json!([])),
         "eth_getBalance" => eth_get_balance(&state, internal_bucket_ref, &req.params).await,
         "eth_getTransactionCount" => eth_get_transaction_count(&state, internal_bucket_ref, &req.params).await,
-        "eth_sendRawTransaction" => eth_send_raw_transaction(&state, internal_bucket_ref, &req.params).await,
+        "eth_sendRawTransaction" => eth_send_raw_transaction(&state, internal_bucket_ref, &bucket, &req.params).await,
         "eth_gasPrice" => Ok(json!("0x0")),
         "eth_estimateGas" => Ok(json!("0x5208")),
         "eth_blockNumber" => eth_block_number(&state, internal_bucket_ref).await,
@@ -361,6 +361,7 @@ async fn eth_block_number(state: &AppState, bucket: &str) -> Result<Value, EvmRp
 async fn eth_send_raw_transaction(
     state: &AppState,
     bucket: &str,
+    raw_bucket: &str,
     params: &Option<Value>,
 ) -> Result<Value, EvmRpcErrorBody> {
     let raw_hex = extract_param_str(params, 0)?;
@@ -390,8 +391,8 @@ async fn eth_send_raw_transaction(
     let nonce = tx_obj.nonce as u64;
     let tx_chain_id = tx_obj.chain_id.unwrap_or(0);
 
-    // 4. Validate chain_id
-    let expected_chain = chain_id_for_bucket(bucket);
+    // 4. Validate chain_id (uses raw bucket name — same as what wallets derive)
+    let expected_chain = chain_id_for_bucket(raw_bucket);
     if tx_chain_id != expected_chain {
         return Err(evm_rpc_err(
             -32000,
