@@ -199,6 +199,10 @@ struct GatewayBucketEventRequest {
     /// Bypass the implicit hold on debits. See `CreateEventRequest`.
     #[serde(default)]
     skip_hold: Option<bool>,
+    /// EVM-style transfer: debit `account` and credit `transfer_to`
+    /// by the same absolute amount. See `CreateEventRequest`.
+    #[serde(default)]
+    transfer_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1351,7 +1355,7 @@ impl GatewayBucketEventRequest {
             // never set it. `submit_create_event` overwrites the value
             // based on the route after this conversion.
             allow_reserved_bucket: false,
-            transfer_to: None,
+            transfer_to: self.transfer_to,
         }
     }
 }

@@ -107,6 +107,7 @@ class Client private constructor(
                 settleReservation = opts.settleReservation,
                 releaseReservation = opts.releaseReservation,
                 skipHold = opts.skipHold,
+                transferTo = opts.transferTo,
             )
         return request("POST", "/events", body = body)
     }

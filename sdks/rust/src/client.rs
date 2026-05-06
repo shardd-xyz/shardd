@@ -166,6 +166,7 @@ impl Client {
             settle_reservation: opts.settle_reservation.as_deref(),
             release_reservation: opts.release_reservation.as_deref(),
             skip_hold: opts.skip_hold,
+            transfer_to: opts.transfer_to.as_deref(),
         };
         self.request_json(Method::POST, "/events", Some(&body), None::<&()>)
             .await

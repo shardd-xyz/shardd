@@ -59,6 +59,8 @@ export interface CreateEventOptions {
    * effect on credits, settle/release, or pure reserves.
    */
   skipHold?: boolean;
+  /** EVM-style transfer: debit `account` and credit `transferTo`. */
+  transferTo?: string;
 }
 
 /** A reservation handle returned by {@link Client.reserve}. */
@@ -152,6 +154,7 @@ export interface CreateEventBody {
   settle_reservation?: string;
   release_reservation?: string;
   skip_hold?: boolean;
+  transfer_to?: string;
 }
 
 /** Body for `POST /v1/me/buckets/:bucket/events`. The `bucket` is on
@@ -169,6 +172,7 @@ export interface CreateMyEventBody {
   settle_reservation?: string;
   release_reservation?: string;
   skip_hold?: boolean;
+  transfer_to?: string;
 }
 
 export interface MyBucketSummary {

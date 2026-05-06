@@ -121,6 +121,7 @@ export class Client {
     if (opts.skipHold !== undefined) {
       body.skip_hold = opts.skipHold;
     }
+    if (opts.transferTo !== undefined) body.transfer_to = opts.transferTo;
     return this.request<CreateEventResult>("POST", "/events", {
       body: JSON.stringify(body),
     });

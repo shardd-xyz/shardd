@@ -72,6 +72,9 @@ pub struct CreateEventOptions {
     /// legitimate full-balance debits. No effect on credits,
     /// settle/release, or pure reserves.
     pub skip_hold: Option<bool>,
+    /// EVM-style transfer: debit `account` and credit `transfer_to`
+    /// atomically by the same absolute amount.
+    pub transfer_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +101,10 @@ pub struct CreateMyEventBody {
     pub release_reservation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_hold: Option<bool>,
+    /// EVM-style transfer: debit `account` and credit `transfer_to`
+    /// atomically by the same absolute amount.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +156,8 @@ pub(crate) struct CreateEventBody<'a> {
     pub release_reservation: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_hold: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_to: Option<&'a str>,
 }
 
 /// Result of a successful [`Client::create_event`](crate::Client::create_event).

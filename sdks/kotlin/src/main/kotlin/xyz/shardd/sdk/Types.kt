@@ -28,6 +28,7 @@ data class CreateEventOptions(
     val settleReservation: String? = null,
     val releaseReservation: String? = null,
     val skipHold: Boolean? = null,
+    val transferTo: String? = null,
 )
 
 data class CreateEventResult(
@@ -183,6 +184,7 @@ data class CreateMyEventBody(
     val settleReservation: String? = null,
     val releaseReservation: String? = null,
     val skipHold: Boolean? = null,
+    val transferTo: String? = null,
 )
 
 internal data class CreateEventBody(
@@ -199,6 +201,7 @@ internal data class CreateEventBody(
     val settleReservation: String? = null,
     val releaseReservation: String? = null,
     val skipHold: Boolean? = null,
+    val transferTo: String? = null,
 )
 
 internal data class GatewayErrorBody(

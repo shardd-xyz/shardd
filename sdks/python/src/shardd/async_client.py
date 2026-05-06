@@ -1,4 +1,5 @@
 """Asynchronous Shardd client built on httpx.AsyncClient."""
+
 from __future__ import annotations
 
 import asyncio
@@ -99,6 +100,7 @@ class AsyncShardd:
         settle_reservation: Optional[str] = None,
         release_reservation: Optional[str] = None,
         skip_hold: Optional[bool] = None,
+        transfer_to: Optional[str] = None,
     ) -> CreateEventResult:
         nonce = idempotency_nonce or str(uuid.uuid4())
         body: dict[str, Any] = {
@@ -125,6 +127,8 @@ class AsyncShardd:
             body["release_reservation"] = release_reservation
         if skip_hold is not None:
             body["skip_hold"] = skip_hold
+        if transfer_to is not None:
+            body["transfer_to"] = transfer_to
         data = await self._request("POST", "/events", json=body)
         return CreateEventResult.from_dict(data)
 
@@ -279,6 +283,7 @@ class AsyncShardd:
         settle_reservation: Optional[str] = None,
         release_reservation: Optional[str] = None,
         skip_hold: Optional[bool] = None,
+        transfer_to: Optional[str] = None,
     ) -> CreateEventResult:
         from urllib.parse import quote
 
@@ -303,6 +308,8 @@ class AsyncShardd:
             body["release_reservation"] = release_reservation
         if skip_hold is not None:
             body["skip_hold"] = skip_hold
+        if transfer_to is not None:
+            body["transfer_to"] = transfer_to
         data = await self._request(
             "POST",
             f"/v1/me/buckets/{quote(bucket, safe='')}/events",
