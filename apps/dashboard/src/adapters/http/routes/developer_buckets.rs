@@ -334,6 +334,8 @@ struct CreateBucketEventRequest {
     min_acks: Option<u32>,
     #[serde(default)]
     ack_timeout_ms: Option<u64>,
+    #[serde(default)]
+    transfer_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,6 +507,7 @@ async fn create_bucket_event(
                 settle_reservation: None,
                 release_reservation: None,
                 skip_hold: None,
+                transfer_to: request.transfer_to,
             },
         )
         .await
